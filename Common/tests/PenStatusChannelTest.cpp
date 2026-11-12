@@ -301,10 +301,28 @@ void TestNoTornReadUnderConcurrentWrites() {
     Require(mixed == 0, "no read mixed fields from two different publishes");
 }
 
+void TestHoverStatusRoundTrip() {
+    PenStatus::Writer writer;
+    Require(writer.Open(PenStatus::Scope::Local),"hover status writer opens");
+    PenStatus::Reader reader;
+    Require(reader.Open(PenStatus::Scope::Local),"hover status reader opens");
+    for(bool enabled:{false,true}) {
+        PenStatus::State state;
+        state.hasPenHoverEnabled=true;state.penHoverEnabled=enabled;
+        state.hasHostHealth=true;state.penHostHealthy=true;state.kbdVendorMissing=true;
+        writer.Publish(state);
+        PenStatus::State got;
+        Require(reader.Read(got),"hover status read");
+        Require(got.hasPenHoverEnabled && got.penHoverEnabled==enabled,"hover status roundtrip");
+        Require(got.hasHostHealth && got.penHostHealthy && got.kbdVendorMissing,"hover preserves accessory health bits");
+    }
+}
+
 } // namespace
 
 int main() {
     try {
+        TestHoverStatusRoundTrip();
         TestRoundTrip();
         TestSecondWriterIsRejected();
         TestAbsentIsNotFalse();

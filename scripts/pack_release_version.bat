@@ -55,7 +55,9 @@ REM The two extensions are a machine-level prerequisite that nothing in the
 REM repository declares otherwise; "add" is idempotent when already installed.
 wix extension add -g WixToolset.UI.wixext >nul 2>&1
 wix extension add -g WixToolset.Util.wixext >nul 2>&1
-wix build -ext WixToolset.UI.wixext -ext WixToolset.Util.wixext -arch arm64 -d BuildVersion=%BUILD_VERSION% -d BuildOutputDir=build\arm64-Release -d HalOutputDir=%HAL_OUTPUT_DIR% scripts\OpenEGoHubSetup.wxs -loc scripts\zh-CN.wxl -out build\OpenEGoHubSetup.msi
+pwsh -NoProfile -ExecutionPolicy Bypass -File scripts\GenerateHeadphoneAssets.ps1 -AssetRoot Tools\EGoTouchSettings\Assets\Headphones -OutputPath build\arm64-Release\HeadphoneAssets.wxs -ManifestOnly
+if %errorlevel% neq 0 exit /b %errorlevel%
+wix build -ext WixToolset.UI.wixext -ext WixToolset.Util.wixext -arch arm64 -d BuildVersion=%BUILD_VERSION% -d BuildOutputDir=build\arm64-Release -d HalOutputDir=%HAL_OUTPUT_DIR% scripts\OpenEGoHubSetup.wxs build\arm64-Release\HeadphoneAssets.wxs -loc scripts\zh-CN.wxl -out build\Ultra-EGoHub_arm64_v%BUILD_VERSION%.msi
 if %errorlevel% neq 0 (
     echo [ERROR] WiX build failed.
     exit /b %errorlevel%
@@ -63,7 +65,7 @@ if %errorlevel% neq 0 (
 
 echo.
 echo [4/4] Build Successful!
-echo Release installer has been generated at: build\OpenEGoHubSetup.msi
+echo Release installer has been generated at: build\Ultra-EGoHub_arm64_v%BUILD_VERSION%.msi
 echo Installed Version: %BUILD_VERSION%
 echo ==============================================
 exit /b 0

@@ -7,7 +7,7 @@
 
 #include "GaokunKeyboard.h"
 #include "GaokunPen.h"
-#include "GaokunThp.h"
+#include "EGoTouchDriver.h"
 
 #include <windows.h>
 
@@ -40,18 +40,18 @@ void PrintUsage() {
 // ---- thp ----
 
 int RunThp(int seconds) {
-    const std::wstring host = SiblingPath(L"GaokunThpHost.exe");
-    Gaokun::Thp::HostController controller;
+    const std::wstring host = SiblingPath(L"EGoTouchDriver.exe");
+    EGoTouch::Driver::HostController controller;
     const auto result = controller.Start(host);
-    if (result != Gaokun::Thp::StartResult::Started && result != Gaokun::Thp::StartResult::AlreadyRunning) {
+    if (result != EGoTouch::Driver::StartResult::Started && result != EGoTouch::Driver::StartResult::AlreadyRunning) {
         wprintf(L"start failed (result=%d, exit=%d)\n", static_cast<int>(result),
                 controller.ExitCode());
-        if (result == Gaokun::Thp::StartResult::ExitedImmediately) {
+        if (result == EGoTouch::Driver::StartResult::ExitedImmediately) {
             wprintf(L"  is HuaweiThpService still running?\n");
         }
         return 1;
     }
-    wprintf(L"host started; touch and pen should work now, holding %d s\n", seconds);
+    wprintf(L"EGoTouchRev driver started; holding %d s\n", seconds);
     Sleep(static_cast<DWORD>(seconds) * 1000);
 
     const bool clean = controller.Stop();

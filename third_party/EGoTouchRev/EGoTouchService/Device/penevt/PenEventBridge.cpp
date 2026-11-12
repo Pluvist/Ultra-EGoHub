@@ -1,0 +1,532 @@
+#include "penevt/PenEventBridge.h"
+#include "btmcu/PenUsbPacketBuilder.h"
+#include "Logger.h"
+
+#include <Windows.h>
+#include <SetupAPI.h>
+#include <hidsdi.h>
+
+#include <chrono>
+#include <cstdint>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
+
+#pragma comment(lib, "setupapi.lib")
+#pragma comment(lib, "hid.lib")
+
+namespace Himax::Pen {
+
+namespace {
+
+const GUID kEventDeviceGuid =
+    {0xdd0ebedb, 0xf1d6, 0x4cfa, {0xac, 0xca, 0x71, 0xe6, 0x6d, 0x31, 0x78, 0xca}};
+
+} // namespace
+
+PenEventBridge::~PenEventBridge() {
+    Stop();
+}
+
+// ── 回调设置 ───────────────────────────────────────────────────────────────
+void PenEventBridge::SetEventCallback(PenEventCallback cb) {
+    auto callback = cb ? std::make_shared<const PenEventCallback>(std::move(cb)) : nullptr;
+    std::lock_guard<std::mutex> lk(m_cbMutex);
+    m_eventCallback = std::move(callback);
+}
+
+void PenEventBridge::SetLinkUpCallback(PenLinkUpCallback cb) {
+    auto callback = cb ? std::make_shared<const PenLinkUpCallback>(std::move(cb)) : nullptr;
+    std::lock_guard<std::mutex> lk(m_cbMutex);
+    m_linkUpCallback = std::move(callback);
+}
+
+// ── 设备路径发现 ───────────────────────────────────────────────────────────
+std::optional<std::wstring> PenEventBridge::FindDevicePath() {
+    HDEVINFO devInfo = SetupDiGetClassDevsW(
+        &kEventDeviceGuid, nullptr, nullptr,
+        DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
+    if (devInfo == INVALID_HANDLE_VALUE) return std::nullopt;
+
+    std::optional<std::wstring> result;
+    for (DWORD i = 0; ; ++i) {
+        SP_DEVICE_INTERFACE_DATA ifData{};
+        ifData.cbSize = sizeof(ifData);
+        if (!SetupDiEnumDeviceInterfaces(devInfo, nullptr,
+                                         &kEventDeviceGuid, i, &ifData)) {
+            if (GetLastError() == ERROR_NO_MORE_ITEMS) break;
+            continue;
+        }
+        DWORD reqSize = 0;
+        SetupDiGetDeviceInterfaceDetailW(devInfo, &ifData, nullptr, 0, &reqSize, nullptr);
+        if (reqSize < sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_W)) continue;
+        std::vector<uint8_t> buf(reqSize, 0);
+        auto* det = reinterpret_cast<SP_DEVICE_INTERFACE_DETAIL_DATA_W*>(buf.data());
+        det->cbSize = sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_W);
+        if (!SetupDiGetDeviceInterfaceDetailW(devInfo, &ifData, det, reqSize,
+                                              nullptr, nullptr)) {
+            continue;
+        }
+
+        HANDLE probe = CreateFileW(det->DevicePath,
+                                   GENERIC_READ | GENERIC_WRITE,
+                                   FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                   nullptr,
+                                   OPEN_EXISTING,
+                                   FILE_ATTRIBUTE_NORMAL,
+                                   nullptr);
+        if (probe == INVALID_HANDLE_VALUE) {
+            LOG_WARN("PenEvent", __func__, "MCU",
+                     "Skipping event device path that failed probe open: error={}",
+                     GetLastError());
+            continue;
+        }
+
+        CloseHandle(probe);
+        result = det->DevicePath;
+        break;
+    }
+    SetupDiDestroyDeviceInfoList(devInfo);
+    return result;
+}
+
+// ── SetScanMode — BT 笔切频命令 ───────────────────────────────────────────
+//
+// 原厂调用链:
+//   ApDaemon::SetScanMode → 构造 IPC {type=1, code=3, "freq1,freq2,mode"}
+//     → THP_Service::BtPen_HandleInitParamEvent → 解码 ASCII → binary
+//       → BtPen_SendPacket(header, binary_payload, 0x20)
+//
+// 我们直接操作 col00 USB 设备，跳过 THP_Service 的解码层，
+// 因此必须自行实现 HandleInitParamEvent 的 type-3 编码。
+//
+// Header (汇编验证: THP_Service.dll @ 0x18000fe0a-0x18000fe1d):
+//   MOV byte ptr [RSP+0x38], 0x07      → byte[0] = 0x07
+//   MOV word ptr [RSP+0x39], 0x0201    → byte[1] = 0x01, byte[2] = 0x02
+//   MOV word ptr [RSP+0x3c], 0x7D01    → byte[4] = 0x01, byte[5] = 0x7D
+//   MOV byte ptr [RSP+0x3f], 0x20      → byte[7] = 0x20
+//   (byte[6] 由 BtPen_SendPacket 强制覆写为 0x11)
+//
+// Payload: 32-byte binary，由 type-3 解码器从 ASCII 十进制字符串转换而来
+
+bool PenEventBridge::SendScanMode(uint8_t freq1, uint8_t freq2, uint8_t mode) {
+    if (!IsTransportOpen()) {
+        LOG_WARN("PenEvent", __func__, "MCU", "Transport not open, cannot send SetScanMode.");
+        return false;
+    }
+
+    const auto packet = BuildScanModeCommandBuffer(freq1, freq2, mode);
+    LOG_INFO("PenEvent", __func__, "MCU",
+             "Sending 0x7D01 scan mode payload: freq1={} freq2={} mode={}.",
+             freq1, freq2, mode);
+    return SendRawPacket(packet.view());
+}
+
+// ── 协议辅助 ───────────────────────────────────────────────────────────────
+int PenEventBridge::GetAckCode(uint8_t eventCode) {
+    return GetFactoryBtMcuAckCode(eventCode);
+}
+
+bool PenEventBridge::SendRawPacket(std::span<const uint8_t> pkt) {
+    std::lock_guard<std::mutex> txLock(m_txMutex);
+    if (!IsTransportOpen()) {
+        LOG_WARN("PenEvent", __func__, "MCU", "Transport not open; dropping packet send.");
+        return false;
+    }
+
+    auto result = GetTransport()->WritePacket(pkt);
+    if (!result) {
+        LOG_WARN("PenEvent", __func__, "MCU",
+                 "WritePacket failed while sending {} bytes (error={}).",
+                 pkt.size(), static_cast<int>(result.error()));
+        return false;
+    }
+
+    return true;
+}
+
+void PenEventBridge::SendAck(uint8_t, uint8_t ackCode) {
+    const auto pkt = BuildPenUsbEventAckBuffer(ackCode);
+    (void)SendRawPacket(pkt.view());
+}
+
+void PenEventBridge::ExecuteInitAction(PenUsbInitAction action) {
+    switch (action) {
+    case PenUsbInitAction::None:
+        return;
+    case PenUsbInitAction::SendInitialQueries:
+        (void)SendQueryPenStatus();
+        (void)SendFirstMcuStatusQuery();
+        return;
+    case PenUsbInitAction::SendSecondMcuStatusQuery:
+        (void)SendSecondMcuStatusQuery();
+        return;
+    case PenUsbInitAction::SendFactoryInitProtocolParams:
+        m_initSession.OnInitParamsSent(SendFactoryInitProtocolParams());
+        if (m_initSession.IsHandshakeComplete()) {
+            m_handshakeDeadline = {};
+            LOG_NOTICE("PenEvent", __func__, "MCU",
+                       "Pen wake handshake sent 0x7D01 successfully.");
+        }
+        return;
+    }
+}
+
+bool PenEventBridge::SendQueryPenModule() {
+    const auto query = BuildPenUsbCommandBuffer(PenUsbCommandId::QueryPenModule);
+    if (!SendRawPacket(query.view())) {
+        LOG_WARN("PenEvent", __func__, "MCU", "Failed to send 0x0001 QueryPenModule.");
+        return false;
+    }
+
+    LOG_INFO("PenEvent", __func__, "MCU", "Sent 0x0001 QueryPenModule.");
+    return true;
+}
+
+bool PenEventBridge::SendQuerySerialNumber() {
+    const auto query = BuildPenUsbCommandBuffer(PenUsbCommandId::QueryPenSerialNo);
+    if (!SendRawPacket(query.view())) {
+        LOG_WARN("PenEvent", __func__, "MCU", "Failed to send 0x0101 QueryPenSerialNo.");
+        return false;
+    }
+
+    LOG_INFO("PenEvent", __func__, "MCU", "Sent 0x0101 QueryPenSerialNo.");
+    return true;
+}
+
+bool PenEventBridge::SendQueryHardwareVersion() {
+    const auto query = BuildPenUsbCommandBuffer(PenUsbCommandId::QueryHardwareVersion);
+    if (!SendRawPacket(query.view())) {
+        LOG_WARN("PenEvent", __func__, "MCU", "Failed to send 0x0201 QueryHardwareVersion.");
+        return false;
+    }
+
+    LOG_INFO("PenEvent", __func__, "MCU", "Sent 0x0201 QueryHardwareVersion.");
+    return true;
+}
+
+bool PenEventBridge::SendQueryFirmwareVersion() {
+    const auto query = BuildPenUsbCommandBuffer(PenUsbCommandId::QueryFirmwareVersion);
+    if (!SendRawPacket(query.view())) {
+        LOG_WARN("PenEvent", __func__, "MCU", "Failed to send 0x0301 QueryFirmwareVersion.");
+        return false;
+    }
+
+    LOG_INFO("PenEvent", __func__, "MCU", "Sent 0x0301 QueryFirmwareVersion.");
+    return true;
+}
+
+bool PenEventBridge::SendQueryPenStatus() {
+    const auto query = BuildPenUsbCommandBuffer(PenUsbCommandId::QueryPenStatus);
+    if (!SendRawPacket(query.view())) {
+        LOG_WARN("PenEvent", __func__, "MCU", "Failed to send 0x7101 CheckPenStatus.");
+        return false;
+    }
+
+    LOG_INFO("PenEvent", __func__, "MCU", "Sent 0x7101 CheckPenStatus.");
+    return true;
+}
+
+bool PenEventBridge::SendFirstMcuStatusQuery() {
+    const auto query = BuildPenUsbCommandBuffer(PenUsbCommandId::QueryPenInfo);
+    if (!SendRawPacket(query.view())) {
+        LOG_WARN("PenEvent", __func__, "MCU", "Failed to send first 0x7701 CheckMcuStatus.");
+        return false;
+    }
+
+    LOG_INFO("PenEvent", __func__, "MCU", "Sent 0x7701 CheckMcuStatus (#1/2).");
+    return true;
+}
+
+bool PenEventBridge::SendSecondMcuStatusQuery() {
+    const auto query = BuildPenUsbCommandBuffer(PenUsbCommandId::QueryPenInfo);
+    if (!SendRawPacket(query.view())) {
+        LOG_WARN("PenEvent", __func__, "MCU", "Failed to send second 0x7701 CheckMcuStatus.");
+        return false;
+    }
+
+    LOG_INFO("PenEvent", __func__, "MCU", "Sent 0x7701 CheckMcuStatus (#2/2).");
+    return true;
+}
+
+bool PenEventBridge::SendPairInfoSet(uint8_t value) {
+    if (!IsTransportOpen()) {
+        LOG_WARN("PenEvent", __func__, "MCU", "Transport not open, cannot send 0x7E01 PairInfoSet.");
+        return false;
+    }
+
+    PenUsbPacketBuffer pkt{};
+    pkt.bytes[0] = 0x07;
+    pkt.bytes[1] = 0x01;
+    pkt.bytes[2] = 0x02;
+    pkt.bytes[3] = 0x00;
+    pkt.bytes[4] = 0x01; // CMD_LO
+    pkt.bytes[5] = 0x7E; // CMD_HI
+    pkt.bytes[6] = 0x11;
+    pkt.bytes[7] = 0x01; // payload tag = 0x01 (Match-Info 专用 payload tag)
+    pkt.bytes[8] = value;
+    pkt.size = 9;
+
+    if (!SendRawPacket(pkt.view())) {
+        LOG_WARN("PenEvent", __func__, "MCU", "PairInfoSet send failed.");
+        return false;
+    }
+
+    LOG_INFO("PenEvent", __func__, "MCU", "Sent 0x7E01 PairInfoSet: value={}", value);
+    return true;
+}
+
+void PenEventBridge::AdvanceSessionFromEvent(uint8_t eventCode) {
+    const auto event = static_cast<PenUsbEventCode>(eventCode);
+    if (event != PenUsbEventCode::PenScreenStatus && event != PenUsbEventCode::PenRepParam) return;
+    if (m_linkStale.load(std::memory_order_acquire) || !m_inputReady || !m_inputReady()) {
+        if (event == PenUsbEventCode::PenRepParam) {
+            m_initParamsRequested = true;
+            MarkLinkStale();
+        }
+        return;
+    }
+    ExecuteInitAction(m_initSession.OnEvent(event));
+}
+
+void PenEventBridge::MarkLinkStale() {
+    m_linkStale.store(true, std::memory_order_release);
+}
+
+void PenEventBridge::OnPoll() {
+    using Clock = std::chrono::steady_clock;
+    constexpr auto kResponseTimeout = std::chrono::seconds(5);
+    constexpr unsigned kMaxAttempts = 3;
+    if (!IsRunning()) return;
+    const bool pending = m_linkStale.load(std::memory_order_acquire);
+    if (!pending && m_handshakeDeadline == Clock::time_point{}) return;
+    const auto now = Clock::now();
+    if (!pending && now < m_handshakeDeadline) {
+        return;
+    }
+    if (!m_inputReady || !m_inputReady()) return;
+
+    if (m_linkStale.exchange(false, std::memory_order_acq_rel)) m_handshakeAttempts = 0;
+    if (m_handshakeAttempts == kMaxAttempts) {
+        m_handshakeDeadline = {};
+        LOG_WARN("PenEvent", __func__, "MCU", "Pen handshake did not finish after {} attempts.", kMaxAttempts);
+        return;
+    }
+    ++m_handshakeAttempts;
+    m_handshakeDeadline = now + kResponseTimeout;
+    LOG_NOTICE("PenEvent", __func__, "MCU", "Input path ready; starting pen handshake (attempt {}).",
+               m_handshakeAttempts);
+    RunHandshake();
+    if (std::exchange(m_initParamsRequested, false)) {
+        AdvanceSessionFromEvent(static_cast<uint8_t>(PenUsbEventCode::PenRepParam));
+    }
+    if (m_queryIdentity) {
+        m_queryIdentity = false;
+        (void)SendQueryPenModule();
+        (void)SendQuerySerialNumber();
+        (void)SendQueryHardwareVersion();
+        (void)SendQueryFirmwareVersion();
+    }
+}
+
+void PenEventBridge::OnConnected() {
+    m_initSession = {};
+    m_handshakeDeadline = {};
+    m_initParamsRequested = false;
+    m_queryIdentity = true;
+    MarkLinkStale();
+    // 先让上层丢弃旧通道的连接结论，再发握手：MCU 对新通道的回包必须落在复位之后
+    std::shared_ptr<const PenLinkUpCallback> linkUp;
+    {
+        std::lock_guard<std::mutex> lk(m_cbMutex);
+        linkUp = m_linkUpCallback;
+    }
+    if (linkUp) {
+        (*linkUp)();
+    }
+}
+
+void PenEventBridge::OnPacketReceived(std::span<const uint8_t> packet) {
+    auto parsed = TryParsePenUsbEventFrame(packet);
+    if (!parsed) {
+        static constexpr char kHex[] = "0123456789ABCDEF";
+        std::string hex;
+        hex.reserve(packet.size() * 2);
+        for (const uint8_t b : packet) {
+            hex.push_back(kHex[b >> 4]);
+            hex.push_back(kHex[b & 0x0F]);
+        }
+        LOG_WARN("PenEvent", __func__, "MCU",
+                 "Dropping invalid RX packet: size={}B bytes={}.", packet.size(), hex);
+        return;
+    }
+
+    const uint8_t eventCode = parsed->eventCode;
+
+    LOG_INFO("PenEvent", __func__, "MCU", "Received event packet: code=0x{:02X} (Name={}) payloadLen={}",
+             eventCode, PenUsbEventNameFromRaw(eventCode), parsed->payload.size());
+
+    int ackCode = GetAckCode(eventCode);
+    if (ackCode >= 0) {
+        SendAck(eventCode, static_cast<uint8_t>(ackCode));
+    }
+
+    AdvanceSessionFromEvent(eventCode);
+
+    PenEvent ev;
+    bool hasEvent = false;
+    {
+        ev.code = static_cast<PenUsbEventCode>(eventCode);
+        (void)ev.payload.assign(parsed->payload);
+        ev.receivedAt = std::chrono::steady_clock::now();
+
+        if (!ev.payload.empty()) {
+            switch (ev.code) {
+            case PenUsbEventCode::PenModule: {
+                const auto payloadLength = static_cast<uint8_t>(parsed->payload.size());
+                auto modelId = TryParsePenModuleModelId(parsed->payload, payloadLength);
+                if (!modelId) {
+                    LOG_WARN("PenEvent", __func__, "MCU",
+                             "PenModule ignored: invalid payloadLen={}",
+                             parsed->payload.size());
+                    break;
+                }
+
+                const auto modelInfo = ResolvePenModuleModel(*modelId);
+                ev.semantic.hasPenModuleModelId = true;
+                ev.semantic.penModuleModelId = *modelId;
+                ev.semantic.penModuleModel = modelInfo.model;
+                ev.semantic.hasPenModuleProtocolHint =
+                    modelInfo.protocolHint != PenModuleProtocolHint::Auto;
+                ev.semantic.penModuleProtocolHint = modelInfo.protocolHint;
+                break;
+            }
+            case PenUsbEventCode::PenSerialNumber: {
+                auto serialNumber = DecodePenUsbUtf8Payload(parsed->payload);
+                ev.semantic.hasSerialNumber = !serialNumber.empty();
+                ev.semantic.serialNumber = std::move(serialNumber);
+                if (!ev.semantic.hasSerialNumber) {
+                    LOG_WARN("PenEvent", __func__, "MCU",
+                             "PenSerialNumber ignored: empty or invalid UTF-8 payloadLen={}",
+                             parsed->payload.size());
+                }
+                break;
+            }
+            case PenUsbEventCode::PenHardwareVersion: {
+                auto hardwareVersion = DecodePenUsbUtf8Payload(parsed->payload);
+                ev.semantic.hasHardwareVersion = !hardwareVersion.empty();
+                ev.semantic.hardwareVersion = std::move(hardwareVersion);
+                if (!ev.semantic.hasHardwareVersion) {
+                    LOG_WARN("PenEvent", __func__, "MCU",
+                             "PenHardwareVersion ignored: empty or invalid UTF-8 payloadLen={}",
+                             parsed->payload.size());
+                }
+                break;
+            }
+            case PenUsbEventCode::UsbdSwVersion: {
+                auto firmwareVersion = DecodePenUsbUtf8Payload(parsed->payload);
+                ev.semantic.hasFirmwareVersion = !firmwareVersion.empty();
+                ev.semantic.firmwareVersion = std::move(firmwareVersion);
+                if (!ev.semantic.hasFirmwareVersion) {
+                    LOG_WARN("PenEvent", __func__, "MCU",
+                             "UsbdSwVersion ignored: empty or invalid UTF-8 payloadLen={}",
+                             parsed->payload.size());
+                }
+                break;
+            }
+            case PenUsbEventCode::DevPairStatus:
+                ev.semantic.hasPairStatus = true;
+                ev.semantic.pairStatus = ev.payload[0];
+                break;
+            case PenUsbEventCode::PenConnStatus:
+                ev.semantic.hasConnection = true;
+                ev.semantic.connected = (ev.payload[0] != 0);
+                break;
+            case PenUsbEventCode::PenTypeInfo:
+                ev.semantic.hasStylusId = true;
+                ev.semantic.stylusId = ev.payload[0];
+                break;
+            case PenUsbEventCode::PenCurStatus:
+                ev.semantic.hasCurrentMode = true;
+                ev.semantic.currentModeRaw = ev.payload[0];
+                ev.semantic.currentMode = PenCurrentModeFromRaw(ev.payload[0]);
+                break;
+            case PenUsbEventCode::EraserToggle:
+                ev.semantic.hasEraserToggle = true;
+                ev.semantic.eraserToggle = ev.payload[0];
+                break;
+            case PenUsbEventCode::PenCurrentFunc:
+                ev.semantic.hasCurrentFunc = true;
+                ev.semantic.currentFunc = ev.payload[0];
+                break;
+            default:
+                break;
+            }
+        }
+
+        hasEvent = true;
+    }
+
+    if (hasEvent) {
+        std::shared_ptr<const PenEventCallback> callback;
+        {
+            std::lock_guard<std::mutex> lk(m_cbMutex);
+            callback = m_eventCallback;
+        }
+        if (callback) {
+            (*callback)(ev);
+        }
+    }
+
+    if (const auto notifyEvent = m_notifyEvent.load(std::memory_order_acquire)) {
+        SetEvent(static_cast<HANDLE>(notifyEvent));
+    }
+}
+
+// ── 握手 ──────────────────────────────────────────────────────────────────
+// API Monitor 抓包验证的原厂初始化序列:
+//   0x7101 CheckPenStatus
+//   0x7701 CheckMcuStatus
+//        ← 0x77 PEN_SCREEN_STATUS, ACK 0x06
+//   0x7701 CheckMcuStatus (重发)
+//        ← 等待 0x7B PEN_REP_PARAM
+//   0x7D01 InitProtocolParams (40B = 8 header + 32 payload, USB HID)
+void PenEventBridge::RunHandshake() {
+    if (!IsRunning() || !IsTransportOpen()) {
+        LOG_INFO("PenEvent", __func__, "MCU",
+                 "Handshake skipped because channel is not running/open.");
+        return;
+    }
+
+    LOG_INFO("PenEvent", __func__, "MCU",
+             "Starting event-driven init sequence: 0x7101 → 0x7701 → 0x7701, with 0x7D01 deferred until MCU 0x7B.");
+
+    ExecuteInitAction(m_initSession.OnConnected());
+}
+
+// ── 初始协议参数 ──────────────────────────────────────────────────────────
+// 原厂 ApDaemon::GetProtocolPrmtMode1/2 → GetProtocolInfo → ReportBluetoothPenInfo
+// 输出: "3333,3333,2e7,412,258,411a,10f,1,"
+// 这些参数通过 BtPen_GetReportInfo(event_class=2) → HandleInitParamEvent
+// 被编码为 0x7D01 二进制包发送给 MCU。
+//
+// 该路径发送抓包确认的固定 factory payload；动态扫描模式使用 SendScanMode。
+bool PenEventBridge::SendFactoryInitProtocolParams() {
+    if (!IsTransportOpen()) {
+        LOG_WARN("PenEvent", __func__, "MCU", "Transport not open, cannot send 0x7D01 InitProtocolParams.");
+        return false;
+    }
+
+    const auto pkt = BuildFactoryInitProtocolParamsCommandBuffer();
+
+    if (!SendRawPacket(pkt.view())) {
+        LOG_WARN("PenEvent", __func__, "MCU", "Failed to send 0x7D01 InitProtocolParams.");
+        return false;
+    }
+
+    return true;
+}
+
+} // namespace Himax::Pen

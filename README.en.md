@@ -1,34 +1,36 @@
+Ultra-EGoHub is a fork of [OpenEGo Hub](https://github.com/NihilDigit/openego-hub), with an input driver based on [EGoTouchRev](https://github.com/awarson2233/EGoTouchRev). See the [changelog](CHANGELOG.md) for the main changes.
+
+The public build uses the built-in headphone fallback icons. See the [third-party notices](THIRD-PARTY-NOTICES.md) for artwork provenance and rights.
+
 <p align="center">
   <img src="https://raw.githubusercontent.com/NihilDigit/openego-hub/main/Assets/brand/openego-hub-256.png" alt="" width="96">
 </p>
 
-<h1 align="center">OpenEGo Hub</h1>
+<h1 align="center">Ultra-EGoHub</h1>
 
 <p align="center">
-  <a href="https://github.com/NihilDigit/openego-hub/releases/latest"><img src="https://img.shields.io/github/v/release/NihilDigit/openego-hub?display_name=tag&label=release" alt="Release"></a>
-  <a href="https://github.com/NihilDigit/openego-hub/actions/workflows/build.yml"><img src="https://img.shields.io/github/actions/workflow/status/NihilDigit/openego-hub/build.yml?branch=main&label=build" alt="Build"></a>
+  <a href="https://github.com/Pluvist/Ultra-EGoHub/releases/latest"><img src="https://img.shields.io/github/v/release/Pluvist/Ultra-EGoHub?display_name=tag&label=release" alt="Release"></a>
+  <a href="https://github.com/Pluvist/Ultra-EGoHub/actions/workflows/build.yml"><img src="https://img.shields.io/github/actions/workflow/status/Pluvist/Ultra-EGoHub/build.yml?branch=main&label=build" alt="Build"></a>
   <img src="https://img.shields.io/badge/Windows%20on%20ARM-ARM64-0078D4?logo=arm&logoColor=white" alt="Windows on ARM">
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/NihilDigit/openego-hub" alt="License"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/Pluvist/Ultra-EGoHub" alt="License"></a>
 </p>
 
 <p align="center"><a href="README.md">中文</a> | English</p>
 
-OpenEGo Hub is a hardware control centre for the HUAWEI MateBook E Go on Windows 11
+Ultra-EGoHub is a hardware control centre for the HUAWEI MateBook E Go on Windows 11
 ARM64, covering touch, pen and keyboard configuration, battery and power management, and
 display colour.
 
-It is built as a native ARM64 service alongside ARM64EC host processes. Those hosts call
-the vendor's own modules for the low-level algorithms and take over the hardware, so
-every feature here keeps working with Huawei PC Manager and its background services
-disabled.
+It is built as a native ARM64 service alongside ARM64EC host processes. The native EGoTouchRev driver supplies input; ARM64EC hosts provide accessory and
+display features through the vendor modules. Keep Huawei PC Manager installed.
 
 > [!IMPORTANT]
 > A complete installation of Huawei PC Manager must be retained on the system.
-> Touch, accessory status, battery thresholds, and colour management directly rely
+> Accessory status, battery thresholds, and colour management directly rely
 > on low-level DLLs shipped with PC Manager; removing related components will cause
 > the corresponding features to fail.
 >
-> This dependency introduces no background overhead: OpenEGo Hub disables the
+> This dependency introduces no background overhead: Ultra-EGoHub disables the
 > official x64 services of PC Manager and removes its logon autostart entries, so
 > they no longer remain resident in the background, eliminating the original
 > emulation overhead. Required DLLs are loaded on demand by this project's host
@@ -38,13 +40,26 @@ disabled.
 
 ## Features
 
-- **Touch.** Multi-touch with palm rejection while writing; finger input is suppressed
-  while the pen is down.
-- **Pen.** Pressure and tilt for the HUAWEI M-Pencil. The side button's double-tap is
-  configurable — either the system pen shortcut, or switching between writing and the
-  eraser — and a OneNote compatibility mode is built in.
+- **Touch.** Input is supplied by EGoTouchRev; palm rejection requires hardware validation.
+  Version 0.5.17 adds headphone connection popups and supports artwork matching across 17 resource models / 71 colors; see [connection and artwork notes](docs/headphone-connection-images.md). Headphone controls are covered in [protocol and support notes](docs/headphones-protocol.md). Existing touch behavior is preserved; previous response work is described in [drag and response notes](docs/drag-response.md). Version 0.5.18 places the card top 24 DIP below the monitor work area, centres it horizontally and keeps its bounds on-screen. Version 0.5.19 moves image lookup, decode and cropping off the UI thread, shares a bounded bitmap cache, and publishes validated headphone information as it arrives; see [popup loading](docs/popup-loading.md). Version 0.5.20 persists frequently used accessory artwork across processes, uses verified cached headphone colors on reconnect, and gives all notifications eased top-entry and upward-exit motion. Version 0.5.21 waits for status and artwork preparation, then presents a static snapshot without live battery/image updates; caching and top-slide motion remain. Version 0.5.22 fixes notifications lost to delayed connection flags, queries only SPP identity/battery for popups, reuses freshly completed reads and retains bounded retries; unavailable fields remain static unknown values. Version 0.5.23 reads only current batteries for verified cached headphone identities, probes cached state immediately after device changes instead of waiting for the 15-second fallback, and overlaps popup construction with the read.
+- **Pen settings.** Accessories → Pen has a Pen hover switch, enabled by default.
+  Turning it off suppresses the cursor and hover events while the tip is up, while
+  retaining contact reports. Changes apply immediately and persist across restarts.
+  Pen input and side-button functionality depend on the current upstream driver support.
 - **Keyboard.** Control over whether the detachable keyboard keeps its wireless link once
   detached.
+- **Headphone reconnect.** Accessories → Headphones provides Fast reconnect and Reconnect now. Version 0.5.25 starts disconnect attempts after about 250 ms and uses precisely matched passive Bluetooth advertisements to trigger bounded reconnection. Cached fallback checks remain every 2 seconds. Results depend on the headset and driver; see [reconnect notes](docs/headphone-reconnect.md).
+- **Consistent accessory layout.** The headphone image frame is 104×72, headphone cards match the pen/keyboard's equal-width responsive columns, and every option has an appropriate Segoe Fluent Icons glyph. Version 0.5.27 unifies headphone group, setting and action icons at 20 DIP in 24×24 alignment frames. Resizing preserves control instances and unsaved EQ drafts.
+- **Equalizer dialog.** Version 0.5.28 opens custom EQ from a button into a dialog containing the slot, name and ten bands. Closing and reopening preserves the draft. Only Save and apply writes to the headset; confirmed readback closes the dialog, while failure retains the draft and displays feedback.
+- **Keyboard attachment glow.** Version 0.5.31 shows an approximately one-second white edge glow on the primary display when the keyboard changes from detached to attached. Its brightness and width are slightly increased. It fades toward the interior, brightens then fades out, takes no focus and does not block input; the Device notifications preference controls it. Charging changes alone and an already-attached keyboard at startup do not trigger it. The EQ entry becomes a full clickable card with a trailing arrow. Drafts can be edited offline and applied after reconnecting and refreshing.
+- **Collapsible headphone menus.** Version 0.5.32 groups sound, device settings, gestures and paired devices into expandable menu lists, keeping the existing icons, options and actions. Groups start expanded and retain their state across refreshes and window resizing. Custom EQ still opens its separate editor from the arrow card.
+- **Aligned headphone cards.** Version 0.5.33 matches the menus, paired devices, custom EQ and reconnect setting to the information card's width, with one column of options per menu. Fast reconnect sits below the custom EQ card.
+- **EnergyStar efficiency mode.** Version 0.5.34 embeds EnergyStar's background efficiency logic natively, with a default-off switch in Battery that works on AC or battery power. Foreground activation, disabling and exit restore the states changed by this feature; the hub, touch driver and accessory hosts are excluded. See the [integration notes](docs/energy-star.md).
+- **Frontend input and scrolling.** Version 0.5.35 uses ScrollView for the explicit page and EQ containers. Finger panning remains enabled; pen clicks and drags remain with child controls instead of the page's legacy pen manipulation routing. Rendering ignores timestamp-only publications, and device layout runs only when visibility or width changes. Driver reports, cadence and scheduling are unchanged. The pen-crash mitigation still requires physical-device validation.
+- **Restore pen scrolling.** Version 0.5.36 restores native pen panning and inertia in those ScrollView containers while retaining clicks, control dragging and refresh optimizations. Current hover and EnergyStar preferences remain as chosen by the user. Pen clicking, panning and stability require device testing together.
+- **Native touch and pen input.** Version 0.5.38 uses WinUI 3 ScrollViewer for touch, pen panning and inertia, with an explicit transparent hit-testable background and no simulated dragging. It retains stable Windows App SDK 2.6.4 and its input fixes introduced in 0.5.37. Physical pen scrolling and stability with the classic native control still require validation. The matching ARM64 Windows App Runtime 2.6.4 or a compatible newer release is required before installation. Drivers and user preferences remain unchanged.
+- **Native input diagnostics.** The user confirmed that 0.5.38 still accepts pen clicks but does not pan inside the app. Version 0.5.39 adds default-off local read-only observation of input types and native scroll state, without replacing WinUI gestures. See [diagnostics](docs/native-input.md).
+- **Pen recovery after sleep.** Version 0.5.41 configures the pen after panel power returns and the input path receives a valid frame. It retries an incomplete handshake within a bounded window and handles initialization requests that arrive during recovery.
 - **Battery and power.** Smart charging or a charge threshold of your own, plus battery
   health, cycle count and remaining runtime.
 - **Colour and display.** sRGB and Display P3 gamuts, colour temperature and an eye
@@ -61,6 +76,8 @@ disabled.
 ---
 
 ## Screenshots
+
+Screenshots below are from upstream OpenEGo Hub.
 
 ### Accessories
 
@@ -129,14 +146,14 @@ Model, processor, memory and OS build for the machine itself.
 
 ### Prerequisites
 
-The factory Huawei drivers and PC Manager have to stay installed. Touch, panel colour
+The factory Huawei drivers and PC Manager have to stay installed. Panel colour
 calibration, the charge threshold and the keyboard's wireless link all rely on DLLs that
-come with them.
+come with them. Install the [ARM64 Windows App Runtime](https://learn.microsoft.com/windows/apps/windows-app-sdk/downloads) compatible with Windows App SDK 2.6.4. Colour gamut presets require a compatible Qualcomm display library supplied by the system or installed locally.
 
 ### Steps
 
-1. Download the latest `OpenEGoHubSetup_arm64_vX.Y.Z.msi` from the
-   [Releases](https://github.com/NihilDigit/openego-hub/releases/latest) page.
+1. Download the latest `Ultra-EGoHub_arm64_vX.Y.Z.msi` from the
+   [Releases](https://github.com/Pluvist/Ultra-EGoHub/releases/latest) page.
 2. Run the installer. Registering the system service requires administrator rights.
 3. The service starts with Windows from then on, and the settings window opens from the
    Start menu.
@@ -154,16 +171,14 @@ come with them.
 - Huawei components you disabled stay disabled across an upgrade. Coming from v0.4.0 or
   earlier they are restored once more, because those versions' uninstall sequence is
   already recorded on the machine.
-- Uninstalling hands touch back to the Huawei touch service and re-enables any Huawei
-  background services and logon autostart entries that were disabled from the
-  settings window.
+- OEM touch remains disabled on exit, failure and uninstall. Other Huawei services
+  and logon entries follow the existing uninstall behavior.
 
 ### How it behaves
 
-- **Touch handover.** The program holds the touch input path while it runs. On exit or on
-  a crash, touch returns to the system's own touch service.
-- **Going back.** To hand touch back to Huawei's service, quit OpenEGo Hub from the
-  settings window.
+- **Touch driver.** The system service owns input independently of the tray. OEM touch
+  remains disabled. After an initial startup failure, it retries five times at two-second
+  intervals, then notifies once and stops retrying. Restart the service to begin a new batch.
 
 ---
 
@@ -233,10 +248,12 @@ WiX produces the ARM64 MSI:
 ```powershell
 dotnet tool install --global wix
 wix extension add -g WixToolset.UI.wixext
-wix build -ext WixToolset.UI.wixext -arch arm64 -d BuildVersion=1.2.3 `
+wix extension add -g WixToolset.Util.wixext
+pwsh -File scripts/GenerateHeadphoneAssets.ps1 -AssetRoot Tools/EGoTouchSettings/Assets/Headphones -OutputPath build/arm64-Release/HeadphoneAssets.wxs -ManifestOnly
+wix build -ext WixToolset.UI.wixext -ext WixToolset.Util.wixext -arch arm64 -d BuildVersion=1.2.3 `
     -d BuildOutputDir=build\arm64-Release -d HalOutputDir=hal\build\Release `
-    scripts\OpenEGoHubSetup.wxs -loc scripts\zh-CN.wxl `
-    -out build\OpenEGoHubSetup_arm64_v1.2.3.msi
+    scripts\OpenEGoHubSetup.wxs build\arm64-Release\HeadphoneAssets.wxs -loc scripts\zh-CN.wxl `
+    -out build\Ultra-EGoHub_arm64_v1.2.3.msi
 ```
 
 Or let the packaging script do the whole thing:

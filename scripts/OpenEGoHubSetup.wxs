@@ -237,6 +237,7 @@
       <Component Id="LegalNoticesComp" Guid="FC7B587E-4F03-4730-AFC3-1DE7309F44C8">
         <File Id="ProjectLicense" Source="LICENSE" KeyPath="yes" />
         <File Id="ThirdPartyNotices" Source="THIRD-PARTY-NOTICES.md" />
+        <File Id="WindowsAppSDKLicense" Source="third_party\WindowsAppSDK\LICENSE.txt" Name="WindowsAppSDK-LICENSE.txt" />
       </Component>
 
     </ComponentGroup>
@@ -249,21 +250,16 @@
       GaokunCtl.exe 是开发用 CLI，不进安装包。
     -->
     <ComponentGroup Id="HalComponents" Directory="INSTALLFOLDER">
+      <Component Id="EGoTouchDriverLicense" Guid="D9046F2E-93AF-4CD6-9F38-AFA06C8F06FD">
+        <File Id="EGoTouchDriverLicenseFile" Source="third_party\EGoTouchRev\LICENSE" Name="EGoTouchRev-LICENSE.txt" KeyPath="yes" />
+      </Component>
 
-      <Component Id="GaokunThpHostComp" Guid="F2B02781-F81C-4A90-9A70-4E2F07585CE7">
-        <File Id="GaokunThpHostEXE" Source="$(var.HalOutputDir)\GaokunThpHost.exe" KeyPath="yes" />
+      <Component Id="EGoTouchDriverComp" Guid="8B79AA05-AFB4-4995-8F51-3988DE889AB1">
+        <File Id="EGoTouchDriverEXE" Source="$(var.BuildOutputDir)\EGoTouchDriver.exe" KeyPath="yes" />
 
-        <!--
-          触控宿主必须作为服务运行，不能由服务进程 CreateProcess 拉起：THP_Service.dll 内部
-          另有一个 ServiceMain，它要先向 SCM 注册控制处理器才会订阅电源通知，非服务进程注册
-          必然失败，原厂的 ApDaemon 随即挂起整条算法链。详见 hal/docs/thp-power-gate.md。
-
-          Start 为 demand：接管由 OpenEGoHubService 按租约发起，不能开机自启，否则它会在服务
-          还没决定由谁提供触控之前就抢走设备。HostController 在服务缺失时会自行注册同名服务
-          （开发环境用不到安装包），这里注册的意义在于卸载时能被 ServiceControl 一并删除。
-        -->
+        <!-- Native EGoTouchRev driver; the Hub starts it only while holding a lease. -->
         <ServiceInstall
-            Id="GaokunThpHostInstaller"
+            Id="EGoTouchDriverInstaller"
             Type="ownProcess"
             Name="OpenEGoHubThpHost"
             DisplayName="!(loc.ThpHostServiceDisplayName)"
@@ -293,22 +289,12 @@
         <File Id="GaokunPowerEXE" Source="$(var.HalOutputDir)\GaokunPower.exe" KeyPath="yes" />
       </Component>
 
-      <!--
-        色域组件。System32 里的同名 DLL 在本机加载得上、符号也解析得到，工厂函数却返回
-        null，所以 GaokunDisplay 需要旁边这一份，见 hal/src/display/Qdcm.cpp。
-
-        源取 hal 的输出目录而不是 hal/vendor：hal 的 build.ps1 会把它复制过去，与其余五个
-        宿主同源，打包时只认一个目录。
-      -->
-      <Component Id="QdcmLibComp" Guid="885FD01E-D58A-405C-9AFE-2C0688FDAAFD">
-        <File Id="QdcmLibDLL" Source="$(var.HalOutputDir)\qdcmlib.dll" KeyPath="yes" />
-      </Component>
-
     </ComponentGroup>
 
     <Feature Id="MainFeature" Title="EGoTouch Core" Level="1">
       <ComponentGroupRef Id="ProductComponents" />
       <ComponentGroupRef Id="HalComponents" />
+      <ComponentGroupRef Id="HeadphoneImageAssets" />
     </Feature>
 
     <!--

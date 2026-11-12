@@ -75,6 +75,59 @@
                 </StackPanel>
             </Grid>
 
+            <StackPanel x:Name="HeadphoneConnectionView"
+                        Spacing="8"
+                        Visibility="Collapsed">
+                <Grid Height="100">
+                    <Image x:Name="HeadphoneImage"
+                           Width="144" Height="100"
+                           Stretch="Uniform"
+                           HorizontalAlignment="Center"
+                           VerticalAlignment="Center"
+                           Visibility="Collapsed" />
+                    <FontIcon x:Name="HeadphoneImageFallback"
+                              Glyph="&#xE7F6;"
+                              FontSize="44"
+                              Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                              HorizontalAlignment="Center"
+                              VerticalAlignment="Center" />
+                </Grid>
+                <TextBlock x:Name="HeadphoneNameText"
+                           Text="华为耳机"
+                           FontSize="14"
+                           FontWeight="SemiBold"
+                           TextAlignment="Center"
+                           TextTrimming="CharacterEllipsis" />
+                <Grid x:Name="HeadphoneBatteryGrid" ColumnSpacing="16">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition x:Name="HeadphoneCaseColumn" Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Spacing="4" HorizontalAlignment="Center">
+                        <TextBlock x:Name="HeadphoneLeftLabel" Text="左耳"
+                                   FontSize="12" HorizontalAlignment="Center"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        <local:BatteryIndicator x:Name="HeadphoneLeftBattery"
+                                                HorizontalAlignment="Center" />
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" Spacing="4" HorizontalAlignment="Center">
+                        <TextBlock x:Name="HeadphoneRightLabel" Text="右耳"
+                                   FontSize="12" HorizontalAlignment="Center"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        <local:BatteryIndicator x:Name="HeadphoneRightBattery"
+                                                HorizontalAlignment="Center" />
+                    </StackPanel>
+                    <StackPanel x:Name="HeadphoneCaseGroup" Grid.Column="2"
+                                Spacing="4" HorizontalAlignment="Center">
+                        <TextBlock Text="充电盒" FontSize="12" HorizontalAlignment="Center"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        <local:BatteryIndicator x:Name="HeadphoneCaseBattery"
+                                                HorizontalAlignment="Center" />
+                    </StackPanel>
+                </Grid>
+            </StackPanel>
+
             <!-- 这一条只有一行字，居中排：连接提示那两张要留出电量和整支笔的位置，靠左才
                  对得齐，这里靠左只会在右边空出半张卡片。 -->
             <StackPanel x:Name="ToolView"

@@ -65,6 +65,18 @@ std::wstring WidenToken(const char* token) {
 
 } // namespace
 
+bool PenSettingsStore::LoadPenHoverEnabled() {
+    const auto path=FilePath();
+    if(path.empty())return true;
+    return GetPrivateProfileIntW(L"Pen",L"hover_enabled",1,path.c_str())!=0;
+}
+bool PenSettingsStore::SavePenHoverEnabled(bool enabled) {
+    const auto dir=DirectoryPath();
+    if(dir.empty() || (!CreateDirectoryW(dir.c_str(),nullptr) && GetLastError()!=ERROR_ALREADY_EXISTS))return false;
+    const auto path=FilePath();
+    return WritePrivateProfileStringW(L"Pen",L"hover_enabled",enabled?L"1":L"0",path.c_str())!=FALSE;
+}
+
 std::wstring PenSettingsStore::FilePath() {
     const auto dir = DirectoryPath();
     if (dir.empty()) {

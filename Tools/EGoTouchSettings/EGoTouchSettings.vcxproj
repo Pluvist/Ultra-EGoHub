@@ -85,7 +85,7 @@
       <!-- GaokunHal.lib 用于直接读电池。电量、容量、健康度、循环次数都不需要提权，本进程
            自己读比经服务转一道更简单；唯独充电阈值要管理员权限，那一项仍走状态通道。
            hal 的构建目录按配置分开，两侧的 CRT 必须一致，否则 LNK2038。 -->
-      <AdditionalDependencies>advapi32.lib;dwmapi.lib;user32.lib;shell32.lib;ole32.lib;version.lib;$(MSBuildThisFileDirectory)..\..\hal\build\$(Configuration)\GaokunHal.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>ws2_32.lib;bthprops.lib;advapi32.lib;dwmapi.lib;user32.lib;shell32.lib;ole32.lib;version.lib;$(MSBuildThisFileDirectory)..\..\hal\build\$(Configuration)\GaokunHal.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <!-- 资源编译器不共用 ClCompile 的搜索路径，App.rc 要包含 Common\include 下的
          AppIconResource.h，这里得单独给一份。 -->
@@ -110,14 +110,22 @@
     <Link>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
+      <GenerateDebugInformation>false</GenerateDebugInformation>
     </Link>
   </ItemDefinitionGroup>
 
   <ItemGroup>
+    <Content Include="Assets\Headphones\manifest.json"><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory></Content>
     <Manifest Include="app.manifest" />
     <ResourceCompile Include="App.rc" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="HeadphoneClient.h" />
+    <ClInclude Include="HeadphoneImageLoader.h" />
+    <ClInclude Include="HeadphoneOptionIcons.h" />
+    <ClInclude Include="NativeInputTrace.h" />
+    <ClInclude Include="..\..\Common\include\HeadphoneImageIdentity.h" />
+    <ClInclude Include="..\..\Common\include\HuaweiHeadphonesProtocol.h" />
     <ClInclude Include="pch.h" />
     <ClInclude Include="App.xaml.h">
       <DependentUpon>App.xaml</DependentUpon>
@@ -126,6 +134,11 @@
       <DependentUpon>BatteryIndicator.xaml</DependentUpon>
     </ClInclude>
     <ClInclude Include="AccessoryImageLoader.h" />
+    <ClInclude Include="AccessoryBitmapCrop.h" />
+    <ClInclude Include="AccessoryBitmapCache.h" />
+    <ClInclude Include="DeviceArtworkIdentityCache.h" />
+    <ClInclude Include="DeviceArtworkIdentityCacheFormat.h" />
+    <ClInclude Include="DeviceArtworkIdentityCacheStore.h" />
     <ClInclude Include="DeviceInfo.h" />
     <ClInclude Include="LogExport.h" />
     <ClInclude Include="MainWindow.xaml.h">
@@ -161,6 +174,13 @@
     <ClCompile Include="BatteryIndicator.xaml.cpp">
       <DependentUpon>BatteryIndicator.xaml</DependentUpon>
     </ClCompile>
+    <ClCompile Include="HeadphonesPage.cpp" />
+    <ClCompile Include="HeadphoneImageLoader.cpp" />
+    <ClCompile Include="HeadphoneNotifications.cpp" />
+    <ClCompile Include="NativeInputTrace.cpp" />
+    <ClCompile Include="HeadphoneClient.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClCompile Include="DeviceArtworkIdentityCache.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClCompile Include="..\..\Common\source\HuaweiHeadphonesProtocol.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <ClCompile Include="AccessoryImageLoader.cpp" />
     <ClCompile Include="DeviceInfo.cpp" />
     <ClCompile Include="LogExport.cpp" />
@@ -188,7 +208,7 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Windows.CppWinRT" Version="3.0.260715.1" />
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.8249" />
-    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.260710003" />
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.6.4" />
   </ItemGroup>
 
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

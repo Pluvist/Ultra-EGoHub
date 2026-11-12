@@ -5,29 +5,29 @@
        Language & Package Info
        ═══════════════════════════════════════════════════════════ -->
   <String Id="Language" Value="1033" />
-  <String Id="ProductName" Value="OpenEGo Hub" />
-  <String Id="Manufacturer" Value="OpenEGo Hub" />
+  <String Id="ProductName" Value="Ultra-EGoHub" />
+  <String Id="Manufacturer" Value="Ultra-EGoHub" />
   <String Id="DowngradeError" Value="A newer version of [ProductName] is already installed. Please uninstall the newer version before proceeding." />
   <String Id="LicenseRtf" Value="scripts\EULA_en-US.rtf" />
 
   <!-- Start menu entry. The name deliberately omits "Settings": the shortcut points at the
        resident tray, and opening settings is only what it does once the tray is running. -->
-  <String Id="ShortcutName" Value="OpenEGo Hub" />
-  <String Id="ShortcutDescription" Value="Start the OpenEGo Hub tray to view accessory status and adjust touch and pen settings." />
+  <String Id="ShortcutName" Value="Ultra-EGoHub" />
+  <String Id="ShortcutDescription" Value="Start the Ultra-EGoHub tray to view accessory status and adjust touch and pen settings." />
 
   <!-- ═══════════════════════════════════════════════════════════
        System Service Info
        ═══════════════════════════════════════════════════════════ -->
-  <String Id="ServiceDisplayName" Value="OpenEGo Hub Touch Service" />
-  <String Id="ServiceDescription" Value="OpenEGo Hub Touch Service — hands touch between the vendor provider and OpenEGo Hub, and aggregates pen and keyboard state. This service starts automatically with Windows and runs under the SYSTEM account." />
-  <String Id="ThpHostServiceDisplayName" Value="OpenEGo Hub Touch Host" />
-  <String Id="ThpHostServiceDescription" Value="OpenEGo Hub Touch Host — hosts the vendor touch pipeline. The touch service starts it on demand when it takes over; it does not start with Windows and runs under the SYSTEM account." />
+  <String Id="ServiceDisplayName" Value="Ultra-EGoHub Touch Service" />
+  <String Id="ServiceDescription" Value="Ultra-EGoHub Touch Service — manages the EGoTouchRev input driver and aggregates pen and keyboard state. This service starts automatically with Windows and runs under the SYSTEM account." />
+  <String Id="ThpHostServiceDisplayName" Value="Ultra-EGoHub Touch Host" />
+  <String Id="ThpHostServiceDescription" Value="Ultra-EGoHub Touch Host — runs the native EGoTouchRev input driver. The touch service starts it on demand when it takes over; it does not start with Windows and runs under the SYSTEM account." />
 
   <!-- ═══════════════════════════════════════════════════════════
        WixUI_InstallDir — Welcome
        ═══════════════════════════════════════════════════════════ -->
   <String Id="WelcomeDlgTitle" Value="{\WixUI_Font_Title}Welcome to [ProductName] Setup" />
-  <String Id="WelcomeDlgDescription" Value="{\WixUI_Font_Normal}This wizard will guide you through the installation of [ProductName].&#xA;&#xA;The installer will deploy the OpenEGo Hub touch service to your device and register it as a system service that starts automatically with Windows.&#xA;&#xA;Click Next to continue, or Cancel to exit Setup." />
+  <String Id="WelcomeDlgDescription" Value="{\WixUI_Font_Normal}This wizard will guide you through the installation of [ProductName].&#xA;&#xA;The installer will deploy the Ultra-EGoHub touch service to your device and register it as a system service that starts automatically with Windows.&#xA;&#xA;Click Next to continue, or Cancel to exit Setup." />
 
   <!-- ═══════════════════════════════════════════════════════════
        WixUI_InstallDir — License Agreement
@@ -86,6 +86,6 @@
   <String Id="VerifyReadyDlgRemoveTitle" Value="{\WixUI_Font_Title}Ready to Remove [ProductName]" />
   <String Id="VerifyReadyDlgRemoveText" Value="Setup is ready to remove [ProductName] from your computer.&#xA;&#xA;Uninstalling will stop and remove the system service, but will not delete user data or log files.&#xA;&#xA;Click Remove to begin uninstallation." />
 
-  <String Id="LaunchTrayCheckbox" Value="Launch OpenEGo Hub" />
+  <String Id="LaunchTrayCheckbox" Value="Launch Ultra-EGoHub" />
 
 </WixLocalization>

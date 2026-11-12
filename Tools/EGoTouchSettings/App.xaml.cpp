@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "PopupTimingTrace.h"
 
 #include "App.xaml.h"
 #include "MainWindow.xaml.h"
@@ -9,7 +10,9 @@ using namespace Microsoft::UI::Xaml;
 namespace winrt::EGoTouchSettings::implementation {
 
 App::App() {
+    PopupTimingTrace::Record("settings.app_start");
     InitializeComponent();
+    PopupTimingTrace::Record("settings.resources_ready");
     m_singleton = CreateMutexW(nullptr, FALSE, EGoTouchTrayIpc::kSettingsMutexName);
     m_secondaryInstance = m_singleton && GetLastError() == ERROR_ALREADY_EXISTS;
 

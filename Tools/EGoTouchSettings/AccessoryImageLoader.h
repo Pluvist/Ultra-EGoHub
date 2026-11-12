@@ -28,6 +28,10 @@ Asset ResolveMachine();
 
 // 解码后按 alpha 非透明像素的外接矩形裁掉画布空白，并留出少量抗锯齿安全边距。
 // 这是 Windows Imaging + WinUI 的通用加载路径，不依赖 Direct2D，也不修改源文件。
+// 解码、透明边界扫描与像素裁切在后台完成；相同原始字节复用进程内有界位图缓存。
+// 常用图另以原始字节 SHA-256 存入 LocalAppData/OpenEGoHub/AccessoryImages/v1；
+// 重启后校验元数据与像素完整性再恢复，缓存不可用时正常解码。磁盘仅保留 8 项/32 MiB。
+// 只在调用 apartment 绑定目标，完成后仍回到该 apartment，保持 UI 调用方式兼容。
 winrt::Windows::Foundation::IAsyncOperation<winrt::Windows::Foundation::Size>
 DecodeCroppedAsync(
     std::vector<uint8_t> encoded,

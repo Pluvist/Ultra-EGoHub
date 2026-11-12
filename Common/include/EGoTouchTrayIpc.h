@@ -35,6 +35,7 @@ enum class Notification : uint32_t {
     // 笔尖与橡皮擦之间的切换。lParam 非零表示切到了橡皮擦。工具由谁切换不影响这条消息：
     // 侧键双击和笔身自带的切换都只表现为状态通道里 eraserActive 的一次跳变。
     PenToolChanged,
+    HeadphoneConnected, // lParam = paired Bluetooth address; append-only
 };
 
 enum class Command : uint32_t {
@@ -73,6 +74,21 @@ enum class Command : uint32_t {
     InstallUpdate,
     // 跳过服务已经查到的那个版本，之后不再为它提示。lParam 不用。
     SkipUpdate,
+    SetPenHoverEnabled, // append-only; lParam is 0 or 1
+    SetHeadphoneFastReconnect, // append-only; lParam is 0 or 1
+    ReconnectHeadphone, // append-only; lParam is the explicitly selected paired address
+    SetEnergyStar, // append-only; lParam is 0 or 1; nonzero response means accepted only
+    QueryEnergyStar, // append-only; lParam is 0; response is EnergyStarStatus flags
+};
+
+// Zero is deliberately invalid: older trays return zero for unknown commands.
+// Enabled is the verified effective state, including while restoration is pending.
+enum class EnergyStarStatus : uint32_t {
+    Supported = 1,
+    Enabled = 2,
+    Transitioning = 4,
+    Failed = 8,
+    Valid = 256,
 };
 
 } // namespace EGoTouchTrayIpc

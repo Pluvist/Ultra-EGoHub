@@ -2,6 +2,7 @@
 
 #include "NotificationWindow.xaml.h"
 #include "AccessoryImageLoader.h"
+#include "PopupTimingTrace.h"
 
 #include <dwmapi.h>
 
@@ -14,19 +15,21 @@
 using namespace winrt;
 using namespace Microsoft::UI::Windowing;
 using namespace Microsoft::UI::Xaml;
-using namespace Microsoft::UI::Xaml::Media::Animation;
 
 namespace winrt::EGoTouchSettings::implementation {
 
 namespace {
 constexpr int kConnectionWidthDip = 336;
 constexpr int kConnectionHeightDip = 102;
+constexpr int kHeadphoneWidthDip = 400;
+constexpr int kHeadphoneHeightDip = 220;
 constexpr int kDeviationWidthDip = 336;
 constexpr int kDeviationHeightDip = 58;
 constexpr int kToolWidthDip = 200;
 constexpr int kToolHeightDip = 58;
-// 换一条通知时淡出与收缩共用的时长。
-constexpr int kSwapMs = 130;
+constexpr int kEntranceMs = 240;
+constexpr int kExitMs = 200;
+constexpr int kSwapExitMs = 120;
 constexpr double kPenImageMaxWidthDip = 304.0;
 constexpr double kPenImageMaxHeightDip = 28.0;
 constexpr double kKeyboardImageMaxWidthDip = 96.0;
@@ -51,15 +54,13 @@ NotificationWindow::NotificationWindow() {
     NotificationRoot().Loaded(
         [this](IInspectable const&, RoutedEventArgs const&) { SyncFrameTheme(); });
 
-    m_transitionTimer = DispatcherTimer();
     m_dwellTimer = DispatcherTimer();
     m_dwellTimer.Interval(std::chrono::seconds(3));
 }
 
 NotificationWindow::~NotificationWindow() {
     if (m_dwellTimer) m_dwellTimer.Stop();
-    if (m_transitionTimer) m_transitionTimer.Stop();
-    if (m_boundsTimer) m_boundsTimer.Stop();
+    StopWindowAnimation();
 }
 
 HWND NotificationWindow::WindowHandle() {
@@ -106,76 +107,159 @@ void NotificationWindow::ConfigureWindow() {
 void NotificationWindow::SelectView(UIElement const& view) {
     for (const UIElement candidate :
          {ConnectionView().as<UIElement>(), KeyboardConnectionView().as<UIElement>(),
+          HeadphoneConnectionView().as<UIElement>(),
           ToolView().as<UIElement>(), DeviationView().as<UIElement>()}) {
         candidate.Visibility(candidate == view ? Visibility::Visible : Visibility::Collapsed);
     }
 }
 
-fire_and_forget NotificationWindow::LoadPenImage(uint32_t modelId) {
+void NotificationWindow::PreparePenImage(
+        uint32_t modelId,
+        const Microsoft::UI::Xaml::Media::ImageSource& source,
+        const Windows::Foundation::Size& pixelSize) {
+    if (m_shutdown || !source || pixelSize.Width <= 0 || pixelSize.Height <= 0) return;
+    if (m_penModelId == modelId && m_penImageSourceModelId == modelId &&
+        m_penImageSource == source) return;
+    ++m_penImageGeneration;
+    m_penImageLoading = false;
+    m_penModelId = modelId;
+    m_penImageSourceModelId = modelId;
+    m_penImageRetryAt = 0;
+    m_penImageSource = source;
+    m_penImagePixelSize = pixelSize;
+}
+
+void NotificationWindow::PrepareKeyboardImage(
+        const Microsoft::UI::Xaml::Media::ImageSource& source,
+        const Windows::Foundation::Size& pixelSize) {
+    if (m_shutdown || !source || pixelSize.Width <= 0 || pixelSize.Height <= 0) return;
+    if (m_keyboardImageSource == source) return;
+    ++m_keyboardImageGeneration;
+    m_keyboardImageLoading = false;
+    m_keyboardImageRetryAt = 0;
+    m_keyboardImageSource = source;
+    m_keyboardImagePixelSize = pixelSize;
+}
+
+Windows::Foundation::IAsyncAction NotificationWindow::PrepareConnectionAsync(
+        PenStatus::State state, bool keyboard) {
+    auto lifetime = get_strong();
+    if (m_shutdown) co_return;
+    const bool pending = keyboard ? m_keyboardImageLoading :
+        m_penImageLoading && m_penModelId == state.modelId;
+    if (pending) {
+        // WinRT async operations have a single Completed handler. Wait for the
+        // shared UI-owned preparation state instead of co-awaiting one action
+        // twice, and always restore the UI apartment before reading fields.
+        const auto ui = apartment_context();
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1000);
+        while (keyboard ? m_keyboardImageLoading : m_penImageLoading) {
+            if (m_shutdown || (!keyboard && m_penModelId != state.modelId) ||
+                std::chrono::steady_clock::now() >= deadline) co_return;
+            co_await resume_after(std::chrono::milliseconds(10));
+            try { co_await ui; } catch (...) { co_return; }
+        }
+        co_return;
+    }
+    if (keyboard) co_await LoadKeyboardImage();
+    else co_await LoadPenImage(state.modelId);
+}
+
+void NotificationWindow::PrepareConnectionImages(const PenStatus::State& state) {
+    if (m_shutdown) return;
+    if (state.modelId || state.modelName[0] ||
+        (state.hasStylusLink && state.stylusLinked) ||
+        (state.hasChargingState && state.charging)) {
+        LoadPenImage(state.modelId);
+    }
+    if (state.kbdModelName[0] || (state.hasKbdPresent && state.kbdPresent)) {
+        LoadKeyboardImage();
+    }
+}
+
+Windows::Foundation::IAsyncAction NotificationWindow::LoadPenImage(uint32_t modelId) {
     auto lifetime = get_strong();
     if (m_shutdown) co_return;
     const ULONGLONG now = GetTickCount64();
     const bool modelChanged = modelId != m_penModelId;
-    if (!modelChanged && m_penImageSource) co_return;
-    if (!modelChanged && now < m_penImageRetryAt) co_return;
-
-    if (modelChanged) {
-        m_penModelId = modelId;
-        m_penImageSource = nullptr;
-        PenImage().Source(nullptr);
-        PenImage().Visibility(Visibility::Collapsed);
-        PenImageFallback().Visibility(Visibility::Visible);
+    if (m_penImageSource && m_penImageSourceModelId == modelId) {
+        if (modelChanged) {
+            m_penModelId = modelId;
+            ++m_penImageGeneration;
+            m_penImageLoading = false;
+        }
+        co_return;
     }
+    if (!modelChanged && (m_penImageLoading || now < m_penImageRetryAt)) co_return;
+
+    // Preparation only changes the cache. The visible toast owns a source/state
+    // snapshot captured by ShowConnected and is never altered by this work.
+    m_penModelId = modelId;
+    m_penImageLoading = true;
     m_penImageRetryAt = now + 5000;
     const uint64_t generation = ++m_penImageGeneration;
+    const auto ui = apartment_context();
+    AccessoryImages::Asset asset;
+    co_await resume_background();
+    try { asset = AccessoryImages::ResolvePen(modelId); } catch (...) {}
+    try { co_await ui; } catch (...) { co_return; }
+    if (m_shutdown || generation != m_penImageGeneration || modelId != m_penModelId) co_return;
 
     try {
-        auto asset = AccessoryImages::ResolvePen(modelId);
-        if (!asset) co_return;
-        Microsoft::UI::Xaml::Media::Imaging::SoftwareBitmapSource source;
-        const auto pixelSize = co_await AccessoryImages::DecodeCroppedAsync(
-            std::move(asset.encoded), source);
-        if (m_shutdown || pixelSize.Width <= 0 || generation != m_penImageGeneration ||
-            modelId != m_penModelId) co_return;
-        m_penImageSource = source;
-        m_penImagePixelSize = pixelSize;
-        PenImage().Source(source);
-        ApplyNoUpscaleSize(
-            PenImage(), pixelSize, kPenImageMaxWidthDip, kPenImageMaxHeightDip);
-        PenImage().Visibility(Visibility::Visible);
-        PenImageFallback().Visibility(Visibility::Collapsed);
+        if (asset) {
+            Microsoft::UI::Xaml::Media::Imaging::SoftwareBitmapSource source;
+            const auto pixelSize = co_await AccessoryImages::DecodeCroppedAsync(
+                std::move(asset.encoded), source);
+            if (m_shutdown || generation != m_penImageGeneration ||
+                modelId != m_penModelId) co_return;
+            if (pixelSize.Width > 0 && pixelSize.Height > 0) {
+                PreparePenImage(modelId, source, pixelSize);
+                co_return;
+            }
+        }
     } catch (...) {
-        // 安装资源正被更新或图片损坏时保留 Fluent 占位图，后续状态刷新会重试。
+        // Resource updates may briefly produce incomplete files; keep this
+        // failure local to preparation and permit a later request to retry.
+    }
+    if (m_shutdown || generation != m_penImageGeneration || modelId != m_penModelId) co_return;
+    m_penImageLoading = false;
+    if (m_penImageSource && m_penImageSourceModelId != modelId) {
+        m_penImageSource = nullptr;
+        m_penImagePixelSize = {};
     }
 }
 
-fire_and_forget NotificationWindow::LoadKeyboardImage() {
+Windows::Foundation::IAsyncAction NotificationWindow::LoadKeyboardImage() {
     auto lifetime = get_strong();
-    if (m_shutdown) co_return;
-    if (m_keyboardImageSource) co_return;
+    if (m_shutdown || m_keyboardImageSource || m_keyboardImageLoading) co_return;
     const ULONGLONG now = GetTickCount64();
     if (now < m_keyboardImageRetryAt) co_return;
+    m_keyboardImageLoading = true;
     m_keyboardImageRetryAt = now + 5000;
     const uint64_t generation = ++m_keyboardImageGeneration;
+    const auto ui = apartment_context();
+    AccessoryImages::Asset asset;
+    co_await resume_background();
+    try { asset = AccessoryImages::ResolveKeyboard(); } catch (...) {}
+    try { co_await ui; } catch (...) { co_return; }
+    if (m_shutdown || generation != m_keyboardImageGeneration) co_return;
 
     try {
-        auto asset = AccessoryImages::ResolveKeyboard();
-        if (!asset) co_return;
-        Microsoft::UI::Xaml::Media::Imaging::SoftwareBitmapSource source;
-        const auto pixelSize = co_await AccessoryImages::DecodeCroppedAsync(
-            std::move(asset.encoded), source);
-        if (m_shutdown || pixelSize.Width <= 0 || generation != m_keyboardImageGeneration) co_return;
-        m_keyboardImageSource = source;
-        m_keyboardImagePixelSize = pixelSize;
-        KeyboardImage().Source(source);
-        ApplyNoUpscaleSize(
-            KeyboardImage(), pixelSize,
-            kKeyboardImageMaxWidthDip, kKeyboardImageMaxHeightDip);
-        KeyboardImage().Visibility(Visibility::Visible);
-        KeyboardImageFallback().Visibility(Visibility::Collapsed);
+        if (asset) {
+            Microsoft::UI::Xaml::Media::Imaging::SoftwareBitmapSource source;
+            const auto pixelSize = co_await AccessoryImages::DecodeCroppedAsync(
+                std::move(asset.encoded), source);
+            if (m_shutdown || generation != m_keyboardImageGeneration) co_return;
+            if (pixelSize.Width > 0 && pixelSize.Height > 0) {
+                PrepareKeyboardImage(source, pixelSize);
+                co_return;
+            }
+        }
     } catch (...) {
-        // 与设备页使用同一资源规则；失败时保留 Fluent 键盘图标并稍后重试。
+        // Use the same resource policy as the device page and retry later.
     }
+    if (m_shutdown || generation != m_keyboardImageGeneration) co_return;
+    m_keyboardImageLoading = false;
 }
 
 void NotificationWindow::ApplyNoUpscaleSize(
@@ -200,117 +284,200 @@ void NotificationWindow::ApplyNoUpscaleSize(
 
 RECT NotificationWindow::TargetBounds(int widthDip, int heightDip) {
     const UINT dpi = GetDpiForWindow(WindowHandle());
-    const int width = MulDiv(widthDip, dpi ? dpi : 96, 96);
-    const int height = MulDiv(heightDip, dpi ? dpi : 96, 96);
+    const UINT scale = dpi ? dpi : 96;
 
     POINT cursor{};
     GetCursorPos(&cursor);
     const HMONITOR monitor = MonitorFromPoint(cursor, MONITOR_DEFAULTTOPRIMARY);
     MONITORINFO info{sizeof(info)};
-    RECT screen{};
-    if (GetMonitorInfoW(monitor, &info)) screen = info.rcMonitor;
+    RECT screen{0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
+    if (GetMonitorInfoW(monitor, &info)) screen = info.rcWork;
     else SystemParametersInfoW(SPI_GETWORKAREA, 0, &screen, 0);
 
-    const int anchorX = screen.left + (screen.right - screen.left) / 2;
-    const int anchorY = screen.top + (screen.bottom - screen.top) / 10;
-    const int left = anchorX - width / 2;
-    const int top = anchorY - height / 2;
+    // Anchor the card's top edge, so taller headphone notifications cannot
+    // extend above the screen. Keep all notification sizes inside the work area.
+    const int availableWidth = std::max(1L, screen.right - screen.left);
+    const int availableHeight = std::max(1L, screen.bottom - screen.top);
+    const int margin = std::max(1, MulDiv(24, scale, 96));
+    const int insetX = std::min(margin, (availableWidth - 1) / 2);
+    const int insetY = std::min(margin, (availableHeight - 1) / 2);
+    const int width = std::clamp(MulDiv(widthDip, scale, 96), 1, availableWidth - 2 * insetX);
+    const int height = std::clamp(MulDiv(heightDip, scale, 96), 1, availableHeight - 2 * insetY);
+    const int left = screen.left + (availableWidth - width) / 2;
+    const int top = screen.top + insetY;
     return RECT{left, top, left + width, top + height};
 }
 
 void NotificationWindow::PositionAndShow(int widthDip, int heightDip) {
+    PopupTimingTrace::Record("popup.slide_start");
     if (m_shutdown) return;
     if (!SystemBackdrop()) {
         SystemBackdrop(Microsoft::UI::Xaml::Media::DesktopAcrylicBackdrop{});
     }
-    AppWindow().Show(false);
     const RECT bounds = TargetBounds(widthDip, heightDip);
-    SetWindowPos(WindowHandle(), HWND_TOPMOST, bounds.left, bounds.top,
-                 bounds.right - bounds.left, bounds.bottom - bounds.top,
+    MONITORINFO info{sizeof(info)};
+    m_slideScreenTop = GetMonitorInfoW(
+        MonitorFromRect(&bounds, MONITOR_DEFAULTTONEAREST), &info) ? info.rcMonitor.top : 0;
+    const RECT from = AboveScreenBounds(bounds);
+    const HWND hwnd = WindowHandle();
+    // Position while hidden. Show(false) never activates this independent window.
+    SetWindowPos(hwnd, HWND_TOPMOST, from.left, from.top,
+                 from.right - from.left, from.bottom - from.top, SWP_NOACTIVATE);
+    AppWindow().Show(false);
+    SetWindowPos(hwnd, HWND_TOPMOST, from.left, from.top,
+                 from.right - from.left, from.bottom - from.top,
                  SWP_NOACTIVATE | SWP_SHOWWINDOW);
-}
-
-// 窗口大小没有补间可用——SetWindowPos 是一次到位的，所以自己按帧插值。两条通知的尺寸差得
-// 不小（连接提示比工具提示宽一半），直接跳过去，卡片会在淡出的中途忽然变形。
-void NotificationWindow::AnimateBounds(int widthDip, int heightDip, int milliseconds) {
-    const RECT from = [this] {
-        RECT r{};
-        GetWindowRect(WindowHandle(), &r);
-        return r;
-    }();
-    const RECT to = TargetBounds(widthDip, heightDip);
-
-    if (m_boundsTimer) m_boundsTimer.Stop();
-    m_boundsTimer = DispatcherTimer();
-    m_boundsTimer.Interval(std::chrono::milliseconds(16));
-    const auto started = GetTickCount64();
     const auto generation = m_presentationGeneration;
-    m_boundsTimer.Tick([this, from, to, started, milliseconds, generation](
-                           IInspectable const& sender, IInspectable const&) {
-        const auto timer = sender.as<DispatcherTimer>();
-        if (m_shutdown || !m_presented || generation != m_presentationGeneration ||
-            !IsWindowVisible(WindowHandle())) {
-            timer.Stop();
-            return;
+    StartWindowAnimation(from, bounds, 0.0, 1.0, kEntranceMs, true,
+        [this, generation] {
+            if (!m_shutdown && generation == m_presentationGeneration) {
+                PopupTimingTrace::Record("popup.visible");
+                RestartDwellTimer();
+            }
+        });
+}
+
+RECT NotificationWindow::AboveScreenBounds(const RECT& bounds) const {
+    const LONG height = bounds.bottom - bounds.top;
+    return RECT{bounds.left, m_slideScreenTop - height - 2,
+                bounds.right, m_slideScreenTop - 2};
+}
+
+void NotificationWindow::StartWindowAnimation(
+        const RECT& from, const RECT& to, double fromOpacity, double toOpacity,
+        int milliseconds, bool easeOut, std::function<void()> completed) {
+    StopWindowAnimation();
+    auto& animation = m_animation;
+    animation.active = true;
+    animation.easeOut = easeOut;
+    animation.hwnd = WindowHandle();
+    animation.from = from;
+    animation.to = to;
+    animation.lastBounds = from;
+    animation.fromOpacity = std::clamp(fromOpacity, 0.0, 1.0);
+    animation.toOpacity = std::clamp(toOpacity, 0.0, 1.0);
+    animation.lastOpacity = animation.fromOpacity;
+    animation.started = std::chrono::steady_clock::now();
+    animation.lastAdvanced = animation.started;
+    animation.milliseconds = std::max(1, milliseconds);
+    animation.generation = m_presentationGeneration;
+    animation.completed = std::move(completed);
+    NotificationRoot().Opacity(animation.fromOpacity);
+
+    const auto weak = get_weak();
+    const auto serial = m_animationSerial;
+    m_renderingToken = Media::CompositionTarget::Rendering(
+        [weak, serial](IInspectable const&, IInspectable const&) {
+            if (auto self = weak.get(); self && serial == self->m_animationSerial)
+                self->AdvanceWindowAnimation(std::chrono::steady_clock::now());
+        });
+
+    // Rendering can pause while the whole HWND is above the monitor, or when
+    // Windows throttles a hidden app. Kick once at 16ms, then use a low-frequency
+    // watchdog only when no render frame has advanced for at least 40ms.
+    m_animationWatchdog = DispatcherTimer();
+    m_animationWatchdog.Interval(std::chrono::milliseconds(16));
+    m_animationWatchdog.Tick([weak, serial, first = true](IInspectable const& sender, IInspectable const&) mutable {
+        const bool kick = first;
+        if (first) {
+            first = false;
+            sender.as<DispatcherTimer>().Interval(std::chrono::milliseconds(64));
         }
-        const auto elapsed = static_cast<double>(GetTickCount64() - started);
-        const double t = std::clamp(elapsed / std::max(1, milliseconds), 0.0, 1.0);
-        // 三次缓出：起步快、收尾慢，与同时进行的淡出是同一种手感。
-        const double eased = 1.0 - std::pow(1.0 - t, 3.0);
-        const auto lerp = [eased](LONG a, LONG b) {
-            return static_cast<int>(std::lround(a + (b - a) * eased));
-        };
-        const int left = lerp(from.left, to.left);
-        const int top = lerp(from.top, to.top);
-        SetWindowPos(WindowHandle(), HWND_TOPMOST, left, top,
-                     lerp(from.right, to.right) - left, lerp(from.bottom, to.bottom) - top,
-                     SWP_NOACTIVATE | SWP_NOZORDER);
-        if (t >= 1.0) timer.Stop();
+        if (auto self = weak.get(); self && serial == self->m_animationSerial) {
+            const auto now = std::chrono::steady_clock::now();
+            const auto& current = self->m_animation;
+            if (!current.active) return;
+            const bool deadline = now - current.started >= std::chrono::milliseconds(current.milliseconds);
+            if (deadline || now - current.lastAdvanced >= std::chrono::milliseconds(kick ? 12 : 40)) {
+                self->AdvanceWindowAnimation(now);
+            }
+        }
     });
-    m_boundsTimer.Start();
+    m_animationWatchdog.Start();
 }
 
-void NotificationWindow::StartOpacityAnimation(
-        double from, double to, int milliseconds) {
-    if (m_opacityStoryboard) m_opacityStoryboard.Stop();
-    Storyboard storyboard;
-    DoubleAnimation opacity;
-    opacity.From(from);
-    opacity.To(to);
-    opacity.Duration(DurationHelper::FromTimeSpan(
-        Windows::Foundation::TimeSpan{static_cast<int64_t>(milliseconds) * 10'000}));
-    Storyboard::SetTarget(opacity, NotificationRoot());
-    Storyboard::SetTargetProperty(opacity, L"Opacity");
-    storyboard.Children().Append(opacity);
-    m_opacityStoryboard = storyboard;
-    storyboard.Begin();
+void NotificationWindow::AdvanceWindowAnimation(std::chrono::steady_clock::time_point now) {
+    auto& animation = m_animation;
+    if (!animation.active) return;
+    if (m_shutdown || !m_presented || animation.generation != m_presentationGeneration) {
+        StopWindowAnimation();
+        return;
+    }
+    const double elapsed = std::chrono::duration<double, std::milli>(now - animation.started).count();
+    const double t = std::clamp(elapsed / animation.milliseconds, 0.0, 1.0);
+    // A watchdog and render callback may arrive together. Reuse the same clock,
+    // skip sub-millisecond duplicate steps, and never derive motion from FPS.
+    if (t < 1.0 && now - animation.lastAdvanced < std::chrono::milliseconds(1)) return;
+    animation.lastAdvanced = now;
+    const double remaining = 1.0 - t;
+    const double eased = animation.easeOut ? 1.0 - remaining * remaining * remaining : t * t * t;
+    const auto lerp = [eased](LONG from, LONG to) {
+        return static_cast<LONG>(std::lround(from + static_cast<double>(to - from) * eased));
+    };
+    const RECT bounds{lerp(animation.from.left, animation.to.left),
+                      lerp(animation.from.top, animation.to.top),
+                      lerp(animation.from.right, animation.to.right),
+                      lerp(animation.from.bottom, animation.to.bottom)};
+    if (!EqualRect(&bounds, &animation.lastBounds)) {
+        const bool sameSize = bounds.right - bounds.left == animation.lastBounds.right - animation.lastBounds.left &&
+            bounds.bottom - bounds.top == animation.lastBounds.bottom - animation.lastBounds.top;
+        SetWindowPos(animation.hwnd, nullptr, bounds.left, bounds.top,
+                     bounds.right - bounds.left, bounds.bottom - bounds.top,
+                     SWP_NOACTIVATE | SWP_NOZORDER | (sameSize ? SWP_NOSIZE : 0));
+        animation.lastBounds = bounds;
+    }
+    const double opacity = animation.fromOpacity +
+        (animation.toOpacity - animation.fromOpacity) * eased;
+    if (opacity != animation.lastOpacity) {
+        NotificationRoot().Opacity(opacity);
+        animation.lastOpacity = opacity;
+    }
+    if (t < 1.0) return;
+    const auto generation = animation.generation;
+    auto completed = std::move(animation.completed);
+    StopWindowAnimation();
+    if (!m_shutdown && generation == m_presentationGeneration && completed) completed();
 }
 
-// 换一条通知时先把当前这张淡出，等看不见了再换内容、改窗口大小，然后淡入。窗口尺寸是一次
-// SetWindowPos，本来就没法补间；趁不可见时改，跳变就看不出来了。窗口没在显示时不必淡出，
-// 直接走淡入那一半。
+void NotificationWindow::StopWindowAnimation() {
+    ++m_animationSerial;
+    m_animation.active = false;
+    m_animation.completed = nullptr;
+    if (m_renderingToken.value) {
+        Media::CompositionTarget::Rendering(m_renderingToken);
+        m_renderingToken = {};
+    }
+    if (m_animationWatchdog) m_animationWatchdog.Stop();
+}
+
+void NotificationWindow::SlideOut(int milliseconds, std::function<void()> completed) {
+    RECT from{};
+    GetWindowRect(WindowHandle(), &from);
+    StartWindowAnimation(from, AboveScreenBounds(from), NotificationRoot().Opacity(), 0.0,
+                         milliseconds, false, std::move(completed));
+}
+
+// A replacement continues out from the actual current position. Only when it is
+// above the screen do we change content and size, then slide the new card in.
 void NotificationWindow::PresentView(
         UIElement const& view, int widthDip, int heightDip, std::function<void()> apply) {
     if (m_shutdown) return;
     const bool wasVisible = m_presented && IsWindowVisible(WindowHandle());
-    const double currentOpacity = NotificationRoot().Opacity();
     m_dwellTimer.Stop();
-    m_transitionTimer.Stop();
-    if (m_boundsTimer) m_boundsTimer.Stop();
-    if (m_opacityStoryboard) m_opacityStoryboard.Stop();
+    StopWindowAnimation();
     const auto generation = ++m_presentationGeneration;
     m_presented = true;
+    m_pendingView = view;
     const auto swap = [this, generation, view, widthDip, heightDip,
                        apply = std::move(apply)]() {
         if (m_shutdown || generation != m_presentationGeneration) return;
         if (apply) apply();
+        m_pendingView = nullptr;
         SelectView(view);
         m_connectionView = view == ConnectionView().as<UIElement>() ||
                            view == KeyboardConnectionView().as<UIElement>();
         NotificationRoot().Opacity(0.0);
         PositionAndShow(widthDip, heightDip);
-        StartOpacityAnimation(0.0, 1.0, 150);
-        RestartDwellTimer();
         if (m_onRefreshDemandChanged) m_onRefreshDemandChanged();
     };
 
@@ -318,11 +485,7 @@ void NotificationWindow::PresentView(
         swap();
         return;
     }
-    // 已经在显示：一边淡出旧的一边把窗口收到新尺寸，淡完再换内容。停留计时也推迟到那时。
-    if (m_dwellTimer) m_dwellTimer.Stop();
-    AnimateBounds(widthDip, heightDip, kSwapMs);
-    StartOpacityAnimation(currentOpacity, 0.0, kSwapMs);
-    StartTransition(kSwapMs, swap);
+    SlideOut(kSwapExitMs, swap);
     if (m_onRefreshDemandChanged) m_onRefreshDemandChanged();
 }
 
@@ -334,67 +497,104 @@ void NotificationWindow::RestartDwellTimer() {
     m_dwellTimer.Tick([this, generation](IInspectable const& sender, IInspectable const&) {
         sender.as<DispatcherTimer>().Stop();
         if (m_shutdown || !m_presented || generation != m_presentationGeneration) return;
-        StartOpacityAnimation(1.0, 0.0, 300);
-        StartTransition(300, [this] { HideNotification(); });
+        SlideOut(kExitMs, [this] { HideNotification(); });
     });
     m_dwellTimer.Start();
 }
 
 void NotificationWindow::ShowConnected(const PenStatus::State& state) {
-    PresentView(ConnectionView(), kConnectionWidthDip, kConnectionHeightDip, [this, state] {
-        ApplyConnectedState(state);
-        if (m_penImageSource) {
-            ApplyNoUpscaleSize(
-                PenImage(), m_penImagePixelSize,
-                kPenImageMaxWidthDip, kPenImageMaxHeightDip);
-        }
+    const Media::ImageSource source = m_penImageSourceModelId == state.modelId
+        ? m_penImageSource : Media::ImageSource{nullptr};
+    const auto pixelSize = m_penImagePixelSize;
+    PresentView(ConnectionView(), kConnectionWidthDip, kConnectionHeightDip, [this, state, source, pixelSize] {
+        ApplyConnectedState(state, source, pixelSize);
     });
 }
 
-void NotificationWindow::ApplyConnectedState(const PenStatus::State& state) {
+void NotificationWindow::ApplyConnectedState(const PenStatus::State& state,
+        const Media::ImageSource& source, const Windows::Foundation::Size& pixelSize) {
     PenNameText().Text(state.modelName[0] ? to_hstring(state.modelName) : L"HUAWEI M-Pencil");
     PenBatteryIndicator().SetState(
         state.hasBatteryLevel, state.batteryLevel,
         state.hasChargingState && state.charging);
 
-    LoadPenImage(state.modelId);
-    const bool hasImage = m_penImageSource != nullptr;
-    PenImage().Visibility(hasImage ? Visibility::Visible : Visibility::Collapsed);
-    PenImageFallback().Visibility(hasImage ? Visibility::Collapsed : Visibility::Visible);
+    PenImage().Source(source);
+    if (source) ApplyNoUpscaleSize(PenImage(), pixelSize, kPenImageMaxWidthDip, kPenImageMaxHeightDip);
+    PenImage().Visibility(source ? Visibility::Visible : Visibility::Collapsed);
+    PenImageFallback().Visibility(source ? Visibility::Collapsed : Visibility::Visible);
 }
 
 void NotificationWindow::ShowKeyboardConnected(const PenStatus::State& state) {
+    const auto source = m_keyboardImageSource;
+    const auto pixelSize = m_keyboardImagePixelSize;
     PresentView(
-        KeyboardConnectionView(), kConnectionWidthDip, kConnectionHeightDip, [this, state] {
-            ApplyKeyboardState(state);
-            if (m_keyboardImageSource) {
-                ApplyNoUpscaleSize(
-                    KeyboardImage(), m_keyboardImagePixelSize,
-                    kKeyboardImageMaxWidthDip, kKeyboardImageMaxHeightDip);
-            }
+        KeyboardConnectionView(), kConnectionWidthDip, kConnectionHeightDip, [this, state, source, pixelSize] {
+            ApplyKeyboardState(state, source, pixelSize);
         });
 }
 
-void NotificationWindow::ApplyKeyboardState(const PenStatus::State& state) {
+void NotificationWindow::ApplyKeyboardState(const PenStatus::State& state,
+        const Media::ImageSource& source, const Windows::Foundation::Size& pixelSize) {
     KeyboardNameText().Text(
         state.kbdModelName[0] ? to_hstring(state.kbdModelName) : L"HUAWEI 智能磁吸键盘");
     KeyboardBatteryIndicator().SetState(
         state.hasKbdBattery, state.kbdBatteryLevel,
         state.hasKbdCharging && state.kbdCharging);
-    LoadKeyboardImage();
-    const bool hasImage = m_keyboardImageSource != nullptr;
-    KeyboardImage().Visibility(hasImage ? Visibility::Visible : Visibility::Collapsed);
-    KeyboardImageFallback().Visibility(hasImage ? Visibility::Collapsed : Visibility::Visible);
+    KeyboardImage().Source(source);
+    if (source) ApplyNoUpscaleSize(
+        KeyboardImage(), pixelSize, kKeyboardImageMaxWidthDip, kKeyboardImageMaxHeightDip);
+    KeyboardImage().Visibility(source ? Visibility::Visible : Visibility::Collapsed);
+    KeyboardImageFallback().Visibility(source ? Visibility::Collapsed : Visibility::Visible);
 }
 
-void NotificationWindow::UpdateState(const PenStatus::State& state) {
-    if (!NeedsStateRefresh()) return;
-    // 只改当前视图内容，不重启动画和停留计时。
-    if (ConnectionView().Visibility() == Visibility::Visible) {
-        ApplyConnectedState(state);
-    } else if (KeyboardConnectionView().Visibility() == Visibility::Visible) {
-        ApplyKeyboardState(state);
-    }
+void NotificationWindow::UpdateState(const PenStatus::State&) {
+    // Compatibility entrypoint. A displayed or queued toast is an immutable
+    // snapshot; fresh data is prepared for the next presentation instead.
+}
+
+void NotificationWindow::ShowHeadphoneConnected(
+        const HuaweiHeadphones::Snapshot& state,
+        const Microsoft::UI::Xaml::Media::ImageSource& imageSource) {
+    PresentView(HeadphoneConnectionView(), kHeadphoneWidthDip, kHeadphoneHeightDip,
+        [this, state, imageSource] {
+            m_headphoneAddress = state.address;
+            m_headphoneArtworkKey = state.resourceId + "_" + state.colorId;
+            ApplyHeadphoneState(state);
+            // A new presentation never inherits a different headset's picture.
+            ApplyHeadphoneImage(imageSource);
+        });
+}
+
+void NotificationWindow::ApplyHeadphoneState(const HuaweiHeadphones::Snapshot& state) {
+    HeadphoneNameText().Text(state.name.empty() ? L"华为耳机" : hstring(state.name));
+    const auto setBattery = [](auto const& indicator, auto const& battery) {
+        const bool known = battery.level && *battery.level >= 0 && *battery.level <= 100;
+        indicator.SetState(known, known ? *battery.level : 0, known && battery.charging);
+    };
+    setBattery(HeadphoneLeftBattery(), state.battery[0]);
+    setBattery(HeadphoneRightBattery(), state.battery[1]);
+    setBattery(HeadphoneCaseBattery(), state.battery[2]);
+    const bool eyewear = state.model == HuaweiHeadphones::Model::Eyewear ||
+        state.model == HuaweiHeadphones::Model::Eyewear2;
+    HeadphoneLeftLabel().Text(eyewear ? L"左镜腿" : L"左耳");
+    HeadphoneRightLabel().Text(eyewear ? L"右镜腿" : L"右耳");
+    HeadphoneCaseGroup().Visibility(eyewear ? Visibility::Collapsed : Visibility::Visible);
+    HeadphoneCaseColumn().Width(eyewear ? GridLength{0.0, GridUnitType::Pixel}
+                                     : GridLength{1.0, GridUnitType::Star});
+    HeadphoneBatteryGrid().ColumnSpacing(eyewear ? 0.0 : 16.0);
+}
+
+void NotificationWindow::ApplyHeadphoneImage(
+        const Microsoft::UI::Xaml::Media::ImageSource& imageSource) {
+    HeadphoneImage().Source(imageSource);
+    HeadphoneImage().Visibility(imageSource ? Visibility::Visible : Visibility::Collapsed);
+    HeadphoneImageFallback().Visibility(imageSource ? Visibility::Collapsed : Visibility::Visible);
+}
+
+void NotificationWindow::UpdateHeadphoneState(
+        const HuaweiHeadphones::Snapshot&,
+        const Microsoft::UI::Xaml::Media::ImageSource&) {
+    // Compatibility entrypoint: never mutate a displayed or queued snapshot.
 }
 
 void NotificationWindow::ShowDeviation() {
@@ -432,23 +632,8 @@ void NotificationWindow::SyncFrameTheme() {
     (void)DwmSetWindowAttribute(hwnd, kDwmwaBorderColor, &border, sizeof(border));
 }
 
-void NotificationWindow::StartTransition(int milliseconds, std::function<void()> action) {
-    m_transitionTimer.Stop();
-    if (m_transitionTick.value) m_transitionTimer.Tick(m_transitionTick);
-    const auto generation = m_presentationGeneration;
-    m_transitionTimer.Interval(std::chrono::milliseconds(milliseconds));
-    m_transitionTick = m_transitionTimer.Tick(
-        [this, generation, action = std::move(action)](
-            IInspectable const& sender, IInspectable const&) {
-            sender.as<DispatcherTimer>().Stop();
-            if (m_shutdown || generation != m_presentationGeneration) return;
-            action();
-        });
-    m_transitionTimer.Start();
-}
-
 bool NotificationWindow::NeedsStateRefresh() const noexcept {
-    return !m_shutdown && m_presented && m_connectionView;
+    return false;
 }
 
 void NotificationWindow::SetRefreshDemandChanged(std::function<void()> cb) {
@@ -458,21 +643,14 @@ void NotificationWindow::SetRefreshDemandChanged(std::function<void()> cb) {
 void NotificationWindow::HideNotification() {
     ++m_presentationGeneration;
     if (m_dwellTimer) m_dwellTimer.Stop();
-    if (m_transitionTimer) {
-        m_transitionTimer.Stop();
-        if (m_transitionTick.value) {
-            m_transitionTimer.Tick(m_transitionTick);
-            m_transitionTick = {};
-        }
-    }
-    if (m_boundsTimer) m_boundsTimer.Stop();
-    if (m_opacityStoryboard) m_opacityStoryboard.Stop();
+    StopWindowAnimation();
     AppWindow().Hide();
     ShowWindow(WindowHandle(), SW_HIDE);
     SystemBackdrop(nullptr);
     NotificationRoot().Opacity(0.0);
     m_presented = false;
     m_connectionView = false;
+    m_pendingView = nullptr;
     if (m_onRefreshDemandChanged) m_onRefreshDemandChanged();
 }
 

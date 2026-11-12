@@ -24,13 +24,13 @@ BEGIN
     BEGIN
         BLOCK "080404b0"
         BEGIN
-            VALUE "CompanyName",      "OpenEGo Hub"
-            VALUE "FileDescription",  "OpenEGo Hub"
+            VALUE "CompanyName",      "Ultra-EGoHub"
+            VALUE "FileDescription",  "Ultra-EGoHub"
             VALUE "FileVersion",      OPENEGO_VERSION_STRING
             VALUE "InternalName",     "OpenEGoHubTray"
             VALUE "LegalCopyright",   "MIT License"
             VALUE "OriginalFilename", "OpenEGoHubTray.exe"
-            VALUE "ProductName",      "OpenEGo Hub"
+            VALUE "ProductName",      "Ultra-EGoHub"
             VALUE "ProductVersion",   OPENEGO_VERSION_STRING
         END
     END

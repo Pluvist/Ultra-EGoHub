@@ -284,7 +284,7 @@ void WriteInfoFile(const fs::path& target, const fs::path& logsDir, size_t copie
         return result;
     };
 
-    out << "OpenEGo Hub 日志导出\r\n";
+    out << "Ultra-EGoHub 日志导出\r\n";
     out << "导出时间: " << utf8(Timestamp(L"%04u-%02u-%02u %02u:%02u:%02u")) << "\r\n";
     out << "来源目录: " << utf8(logsDir.wstring()) << "\r\n";
     out << "文件数量: " << copied << "\r\n";

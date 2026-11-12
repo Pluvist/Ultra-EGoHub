@@ -45,7 +45,7 @@ int wmain(int argc, wchar_t **argv) {
     }
 
     Cleanup::Log(L"[3/4] vendor handover and leftover hal hosts");
-    Cleanup::WaitForVendorTouchService(15000, options.dryRun);
+    // OEM input remains disabled during cleanup and uninstall.
     // 宿主靠 --parent 机制跟着服务退出，但 GaokunThpHost 还要等厂商 DLL 收尾，给 5 秒。
     Cleanup::KillProcessesAfterGrace(Cleanup::HalHostProcesses(), 5000, options.dryRun);
 

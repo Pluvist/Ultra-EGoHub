@@ -73,6 +73,8 @@ inline constexpr uint8_t kHostHealthKbd   = 1u << 2;
 // 布局与 ABI 版本不变。
 inline constexpr uint8_t kHostHealthPenVendorMissing = 1u << 3;
 inline constexpr uint8_t kHostHealthKbdVendorMissing = 1u << 4;
+inline constexpr uint8_t kPenHoverKnown = 1u << 5;
+inline constexpr uint8_t kPenHoverEnabled = 1u << 6;
 
 inline constexpr uint32_t kFlagHasBatteryLevel   = 1u << 0;
 inline constexpr uint32_t kFlagHasChargingState  = 1u << 1;
@@ -247,6 +249,8 @@ struct State {
     bool deviceAttached = false;
     bool hasStylusLink = false;
     bool stylusLinked = false;
+    bool hasPenHoverEnabled = false;
+    bool penHoverEnabled = true;
     bool hasPenButtonMode = false;
     uint8_t penButtonMode = 0;
     bool hasEraserActive = false;
@@ -301,6 +305,8 @@ struct State {
     char penSerial[kSerialCapacity]{};
     char kbdModelName[kModelNameCapacity]{};
     char kbdFirmware[kVersionCapacity]{};
+
+    bool operator==(const State&) const noexcept = default;
 };
 
 // Service side. Creates the mapping with an ACL that grants full control to SYSTEM and

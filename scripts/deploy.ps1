@@ -83,7 +83,7 @@ function Stop-Stack {
     }
     # Get-Process 按进程名精确匹配，写成 GaokunKeyboard 杀不到 GaokunKeyboardHost；服务停下后
     # 宿主要等父进程句柄才退出，这里不杀干净，下面的 Copy-Item 会撞上被占用的 exe 而中止。
-    $apps = 'OpenEGoHubTray', 'OpenEGoHubSettings', 'GaokunThpHost', 'GaokunPenHost', 'GaokunKeyboardHost'
+    $apps = 'OpenEGoHubTray', 'OpenEGoHubSettings', 'EGoTouchDriver', 'GaokunThpHost', 'GaokunPenHost', 'GaokunKeyboardHost'
     Get-Process $apps -ErrorAction SilentlyContinue | Stop-Process -Force
     # 宿主在父进程消失后自己收尾再退出，GaokunThpHost 还要交还设备并等华为服务起来，最长要
     # 好几秒。exe 在这之前仍被映射，Copy-Item 会失败，所以等到它们真的不在了再往下走。
@@ -119,7 +119,7 @@ if (-not (Test-Path $Backup)) {
 
 # 只复制生产目录原本就有的那些，不要把整个 build 目录（含几十个测试 exe）搬过去。
 $appFiles = @(
-    'OpenEGoHubService.exe', 'OpenEGoHubTray.exe', 'OpenEGoHubSettings.exe',
+    'OpenEGoHubService.exe', 'OpenEGoHubTray.exe', 'OpenEGoHubSettings.exe', 'EGoTouchDriver.exe',
     'OpenEGoHubSettings.pri', 'EGoTouchSettings.winmd',
     'App.xbf', 'BatteryIndicator.xbf', 'MainWindow.xbf', 'NotificationWindow.xbf',
     'Microsoft.WindowsAppRuntime.Bootstrap.dll'
@@ -132,7 +132,7 @@ foreach ($f in $appFiles) {
 
 # hal 的宿主与一次性组件。必须和服务同目录，见文件头的说明。
 $halFiles = @(
-    'GaokunThpHost.exe', 'GaokunPenHost.exe', 'GaokunKeyboardHost.exe',
+    'GaokunPenHost.exe', 'GaokunKeyboardHost.exe',
     'GaokunDisplay.exe', 'GaokunPower.exe', 'GaokunCtl.exe',
     # 色域组件必须带上它。System32 里的同名 DLL 在本机加载得上却拒绝初始化，
     # 详见 gaokun-hal 的 src/display/Qdcm.cpp。
@@ -143,6 +143,10 @@ foreach ($f in $halFiles) {
     if (Test-Path $src) { Copy-Item $src $Target -Force }
     else { Write-Host "[!] missing hal component $f" -ForegroundColor Yellow }
 }
+
+$legacyHost = Join-Path $Target 'GaokunThpHost.exe'
+if (Test-Path -LiteralPath $legacyHost) { Remove-Item -LiteralPath $legacyHost -Force }
+Copy-Item (Join-Path $RepoRoot 'third_party/EGoTouchRev/LICENSE') (Join-Path $Target 'EGoTouchRev-LICENSE.txt') -Force
 
 Write-Host "[ok] deployed $Config to $Target" -ForegroundColor Green
 Start-Service OpenEGoHubService

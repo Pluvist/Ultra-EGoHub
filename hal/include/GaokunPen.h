@@ -155,7 +155,7 @@ enum class StartResult {
     ExitedImmediately,
 };
 
-// 与 Gaokun::Thp::HostController 同形：宿主等待本进程句柄，调用方崩溃时它自行收尾。
+// 与 EGoTouch::Driver::HostController 同形：宿主等待本进程句柄，调用方崩溃时它自行收尾。
 class HostController {
 public:
     HostController() noexcept = default;

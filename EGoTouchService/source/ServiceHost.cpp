@@ -9,6 +9,7 @@
 #include "penpress/PenPressureReader.h"
 #include "ServiceConfigCore.h"
 #include "PenSettingsStore.h"
+#include "PenHoverChannel.h"
 #include "TouchProviderCoordinator.h"
 #include "VendorServices.h"
 #include "ChargePolicy.h"
@@ -71,6 +72,7 @@ struct ServiceHost::Impl {
     std::atomic<bool> m_penControlStop{false};
     // 托盘要显示当前哪一项生效，而状态发布跑在 DeviceRuntime 的回调线程上，
     // 不能去读会被配置路径改写的 m_configState。应用路径写这份原子镜像，发布路径只读它。
+    PenHoverChannel::Writer m_penHover;
     std::atomic<PenButtonMode> m_effectivePenButtonMode{PenButtonMode::WindowsInk};
     std::atomic<PenStatus::TouchProviderState> m_touchProvider{
         PenStatus::TouchProviderState::Unknown};
@@ -367,60 +369,13 @@ bool StopHuaweiThpService() {
         });
 }
 
-// 保持 HuaweiThpService 的启动类型为自动，只是让它此刻不在运行。
-//
-// 这里曾经把它设为 SERVICE_DISABLED，理由是防止 SCM 把它拉起来抢设备。代价是「我们没能
-// 接管」和「用户没有触控」变成了同一件事：本服务崩溃、被手工停掉、或者干脆没随开机启动，
-// 禁用状态都会留在注册表里，重启后原厂服务也不会自启，机器就没有触摸屏了——实测踩到过。
-//
-// 只停不禁的代价是重启后有一小段时间由原厂提供触控，直到本服务起来把它换掉。那是个可见
-// 但无害的交接，比丢掉触控好得多。
-// 只问一次状态，不等待、不发停止命令。
-bool IsHuaweiThpServiceStopped() {
-    return WithHuaweiService(SERVICE_QUERY_STATUS,
-        [](SC_HANDLE service) {
-            SERVICE_STATUS_PROCESS status{};
-            DWORD needed = 0;
-            if (!QueryServiceStatusEx(service, SC_STATUS_PROCESS_INFO,
-                                      reinterpret_cast<BYTE*>(&status), sizeof(status), &needed)) {
-                return false;
-            }
-            return status.dwCurrentState == SERVICE_STOPPED;
-        });
-}
-
-bool EnsureHuaweiThpAutoStart() {
-    return WithHuaweiService(SERVICE_CHANGE_CONFIG,
-        [](SC_HANDLE service) {
-            return ChangeServiceConfigW(service, SERVICE_NO_CHANGE, SERVICE_AUTO_START,
-                                        SERVICE_NO_CHANGE, nullptr, nullptr, nullptr,
-                                        nullptr, nullptr, nullptr, nullptr) != FALSE;
-        });
-}
-
-bool RestoreHuaweiThpService() {
-    return WithHuaweiService(SERVICE_CHANGE_CONFIG | SERVICE_START | SERVICE_QUERY_STATUS,
-        [](SC_HANDLE service) {
-            if (!ChangeServiceConfigW(service, SERVICE_NO_CHANGE, SERVICE_AUTO_START,
-                                      SERVICE_NO_CHANGE, nullptr, nullptr, nullptr,
-                                      nullptr, nullptr, nullptr, nullptr)) {
-                return false;
-            }
-
-            SERVICE_STATUS_PROCESS status{};
-            DWORD needed = 0;
-            if (!QueryServiceStatusEx(service, SC_STATUS_PROCESS_INFO,
-                                      reinterpret_cast<BYTE*>(&status), sizeof(status), &needed)) {
-                return false;
-            }
-            if (status.dwCurrentState == SERVICE_RUNNING) return true;
-            if (status.dwCurrentState != SERVICE_START_PENDING &&
-                !StartServiceW(service, 0, nullptr) &&
-                GetLastError() != ERROR_SERVICE_ALREADY_RUNNING) {
-                return false;
-            }
-            return WaitForServiceState(service, SERVICE_RUNNING, kProviderServiceWaitMs);
-        });
+bool DisableHuaweiThpService() {
+    const bool configured=WithHuaweiService(SERVICE_CHANGE_CONFIG,[](SC_HANDLE service){
+        return ChangeServiceConfigW(service,SERVICE_NO_CHANGE,SERVICE_DISABLED,
+            SERVICE_NO_CHANGE,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr)!=FALSE;
+    });
+    if(!configured)return GetLastError()==ERROR_SERVICE_DOES_NOT_EXIST;
+    return StopHuaweiThpService();
 }
 
 enum class DebugDerivedSourceIndex : int16_t {
@@ -662,6 +617,10 @@ bool ServiceHost::ValidateStartupConfig(const Config::ConfigStore& store) const 
 }
 
 bool ServiceHost::StartRuntimeAndPipeline() {
+    if(!m_impl->m_penHover.Open(PenSettingsStore::LoadPenHoverEnabled())) {
+        LOG_ERROR("Service",__func__,"PenHover","Cannot create driver settings channel.");
+        return false;
+    }
     m_startPhase.store(ServiceStartPhase::RuntimeAndPipeline, std::memory_order_release);
     m_deviceRuntime = std::make_unique<DeviceRuntime>(
         kDevicePathMaster, kDevicePathSlave, kDevicePathInterrupt);
@@ -711,7 +670,7 @@ bool ServiceHost::StartRuntimeAndPipeline() {
 
     TouchProviderOperations providerOps{};
     providerOps.stopHuawei = [] {
-        const bool ok = StopHuaweiThpService();
+        const bool ok = StopHuaweiThpService() || GetLastError() == ERROR_SERVICE_DOES_NOT_EXIST;
         if (!ok) {
             LOG_ERROR("Service", "StopHuawei", "Provider",
                       "Failed to stop HuaweiThpService (err={}).", GetLastError());
@@ -719,18 +678,8 @@ bool ServiceHost::StartRuntimeAndPipeline() {
         return ok;
     };
     providerOps.disableHuawei = [] {
-        // 名字叫 disable，实际只保证它不在运行、同时留着自动启动。原因见
-        // EnsureHuaweiThpAutoStart 的注释：真禁用会在本服务缺席时连带丢掉触控。
-        //
-        // 常路只查一次状态。这一步的调用点前面刚刚等到过 SERVICE_STOPPED，再走一遍完整的
-        // 停止流程最坏要在控制线程上白等 15 秒，而租约到期、托盘的命令和宿主的存活检查都
-        // 排在这个线程后面。确实还在跑时才真去停它——回滚路径上原厂可能起了一半。
-        const bool ok = EnsureHuaweiThpAutoStart() &&
-                        (IsHuaweiThpServiceStopped() || StopHuaweiThpService());
-        if (!ok) {
-            LOG_ERROR("Service", "DisableHuawei", "Provider",
-                      "Failed to stand HuaweiThpService down (err={}).", GetLastError());
-        }
+        const bool ok=DisableHuaweiThpService();
+        if(!ok)LOG_ERROR("Service", "DisableHuawei", "Provider", "Failed to disable OEM touch (err={}).",GetLastError());
         return ok;
     };
     providerOps.startEGo = [this] { return StartEGoTouchProvider(); };
@@ -740,17 +689,9 @@ bool ServiceHost::StartRuntimeAndPipeline() {
     providerOps.egoAlive = [this] {
         if (m_thpHost.IsRunning()) return true;
         LOG_ERROR("Service", "EGoAlive", "Provider",
-                  "THP host is gone (exit={}); restarting it or handing touch back to Huawei.",
+                  "EGoTouchRev driver exited (exit={}); retrying with OEM input disabled.",
                   m_thpHost.ExitCode());
         return false;
-    };
-    providerOps.restoreHuawei = [] {
-        const bool ok = RestoreHuaweiThpService();
-        if (!ok) {
-            LOG_ERROR("Service", "RestoreHuawei", "Provider",
-                      "Failed to restore HuaweiThpService (err={}).", GetLastError());
-        }
-        return ok;
     };
     m_impl->m_touchProviderCoordinator = std::make_unique<TouchProviderCoordinator>(
         std::move(providerOps),
@@ -759,17 +700,9 @@ bool ServiceHost::StartRuntimeAndPipeline() {
         },
         std::chrono::seconds(5));
 
-    // 服务本身是常驻监督器，启动时先确保 Huawei 提供触控。托盘登录后取得租约，才切换到
-    // EGo runtime；这样登录界面和托盘未运行的场景始终有 OEM 回退。
-    const bool huaweiReady = m_impl->m_touchProviderCoordinator->Release();
-    if (!huaweiReady &&
-        m_impl->m_touchProviderCoordinator->State() == PenStatus::TouchProviderState::Error) {
-        LOG_ERROR("Service", __func__, "Boot",
-                  "Neither HuaweiTHP nor EGoTouch could be made active.");
-        m_impl->m_touchProviderCoordinator.reset();
-        m_deviceRuntime.reset();
-        return false;
-    }
+    // Input starts at boot, independently of tray presence. Keep the supervisor
+    // alive after an initial failure so Tick can perform the five retries.
+    (void)m_impl->m_touchProviderCoordinator->AcquireOrRenew(TouchProviderCoordinator::Clock::now());
 
     // 控制线程在 runtime 对象和 provider coordinator 都发布之后才启动。
     StartPenControlChannel();
@@ -778,7 +711,7 @@ bool ServiceHost::StartRuntimeAndPipeline() {
     RelaunchTrayAfterUpdate();
 
     LOG_INFO("Service", __func__, "Boot",
-             "Touch provider supervisor ready; awaiting tray lease.");
+             "Touch driver supervisor ready; OEM input remains disabled.");
     return true;
 }
 
@@ -930,7 +863,8 @@ bool ServiceHost::StartPenSubsystem() {
         m_accessoryStop.store(false, std::memory_order_release);
         m_accessoryThread = std::thread([this] { AccessoryLoop(); });
 
-        StartPenEventBridge();
+        // EGoTouchRev owns the raw BT-MCU event/pressure channels. The accessory
+        // hosts still supply battery, identity and settings; do not open a second reader.
 
         LOG_INFO("Service", __func__, "MCU",
                  "Accessory subsystem started (penHost={}, kbdHost={}); the supervisor now "
@@ -1357,7 +1291,7 @@ std::wstring ServiceHost::ResolveHostPath(const wchar_t* exeName) {
     return {};
 }
 
-std::wstring ServiceHost::ResolveThpHostPath() { return ResolveHostPath(L"GaokunThpHost.exe"); }
+std::wstring ServiceHost::ResolveThpHostPath() { return ResolveHostPath(L"EGoTouchDriver.exe"); }
 
 namespace {
 // 同步跑一个 hal 的一次性组件。色域与充电阈值都是一次动作，没有常驻状态，用进程调用即可；
@@ -1567,6 +1501,8 @@ void ServiceHost::PublishStatusSnapshot() {
     // 该把开关显示成不可用，后者还要连带说明为什么点了没反应。touch_only 不启动这两个宿主，
     // 也就没有可发布的判定。
     out.hasHostHealth = m_runtimeMode == ServiceMode::Full;
+    out.hasPenHoverEnabled=m_impl->m_penHover.IsOpen();
+    out.penHoverEnabled=m_impl->m_penHover.Value();
     out.penHostHealthy = penHealthy;
     out.kbdHostHealthy = kbdHealthy;
     // 不健康时还要说明是不是「电脑管家的配件组件缺失」这种得由用户去修的确定性失败，否则
@@ -1625,28 +1561,27 @@ bool ServiceHost::StartEGoTouchProvider() {
     const std::wstring host = ResolveThpHostPath();
     if (host.empty()) {
         LOG_ERROR("Service", __func__, "Provider",
-                  "GaokunThpHost.exe not found next to the service or under hal/build/Release.");
+                  "EGoTouchDriver.exe not found next to the service or under hal/build/Release.");
         return false;
     }
 
     SetInputSuppressed(false);
 
     // 同 StartPenSubsystem：宿主没有控制台，日志只能落盘，级别跟随服务。
-    const std::wstring hostLogArgs =
-        std::wstring(L"--log-level ") + Common::Logger::MinLevelName();
+    const std::wstring hostLogArgs; // EGoTouchRev owns its logging configuration.
 
     switch (m_thpHost.Start(host, hostLogArgs)) {
-    case Gaokun::Thp::StartResult::Started:
-    case Gaokun::Thp::StartResult::AlreadyRunning:
-        LOG_INFO("Service", __func__, "Provider", "ARM64EC THP host started.");
+    case EGoTouch::Driver::StartResult::Started:
+    case EGoTouch::Driver::StartResult::AlreadyRunning:
+        LOG_INFO("Service", __func__, "Provider", "native EGoTouchRev driver started.");
         return true;
-    case Gaokun::Thp::StartResult::ExitedImmediately:
+    case EGoTouch::Driver::StartResult::ExitedImmediately:
         // 宿主起来了又马上退出，几乎总是因为 HuaweiThpService 仍持有设备。
         LOG_ERROR("Service", __func__, "Provider",
                   "THP host exited on startup (code={}); is HuaweiThpService still running?",
                   m_thpHost.ExitCode());
         return false;
-    case Gaokun::Thp::StartResult::HostNotFound:
+    case EGoTouch::Driver::StartResult::HostNotFound:
         LOG_ERROR("Service", __func__, "Provider", "THP host missing at the resolved path.");
         return false;
     default:
@@ -1687,7 +1622,7 @@ bool ServiceHost::StopEGoTouchProvider() {
                   "THP host exited abnormally (code=%d); continuing provider recovery.",
                   m_thpHost.ExitCode());
     } else {
-        LOG_INFO("Service", __func__, "Provider", "ARM64EC THP host stopped.");
+        LOG_INFO("Service", __func__, "Provider", "native EGoTouchRev driver stopped.");
     }
     return stopped;
 }
@@ -1768,6 +1703,15 @@ void ServiceHost::ApplyPenButtonMode(PenButtonMode mode, const char* source, boo
 }
 
 void ServiceHost::HandlePenControlCommand(const PenControl::Command& command) {
+    if(command.hasPenHoverEnabled) {
+        if(PenSettingsStore::SavePenHoverEnabled(command.penHoverEnabled)) {
+            m_impl->m_penHover.Set(command.penHoverEnabled);
+            LOG_INFO("Service",__func__,"PenHover","Pen hover enabled={}",command.penHoverEnabled);
+        } else {
+            LOG_ERROR("Service",__func__,"PenHover","Cannot save pen hover setting (err={}).",GetLastError());
+        }
+        RepublishPenStatus();
+    }
     if (command.hasPenButtonMode) {
         // 同会话的任意进程都写得进这个通道，所以提交的值一律按枚举映射校验，非法值不落地。
         const auto mode = PenButtonModeFromNumeric(static_cast<int32_t>(command.penButtonMode));

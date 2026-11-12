@@ -7,7 +7,7 @@
 
 #include "GaokunKeyboard.h"
 #include "GaokunPen.h"
-#include "GaokunThp.h"
+#include "EGoTouchDriver.h"
 
 #include <atomic>
 #include <thread>
@@ -100,7 +100,7 @@ private:
 
     // 触控由 gaokun-hal 的 ARM64EC 宿主进程提供，这里只持有它的生命周期。声明放在 Impl
     // 之外是因为 provider 的启停要直接用到它，而 Impl 是不完全类型。
-    Gaokun::Thp::HostController m_thpHost;
+    EGoTouch::Driver::HostController m_thpHost;
 
     // 笔与键盘的 MCU 通道同样来自 gaokun-hal：那边直接驱动厂商的 PenService.dll 与
     // KeyboardService.dll，型号识别与按键语义都留在厂商实现里，不必在本仓库重新推导一遍。

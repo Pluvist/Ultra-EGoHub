@@ -27,6 +27,8 @@ public:
 
     /// 完整文件路径，只为日志可读。
     static std::wstring FilePath();
+    static bool LoadPenHoverEnabled();
+    static bool SavePenHoverEnabled(bool enabled);
 };
 
 } // namespace Service

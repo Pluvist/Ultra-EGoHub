@@ -1,0 +1,11 @@
+Validation date: 2026-11-01 (Asia/Shanghai)
+Version: 0.5.5
+Release build and ARM64 MSI packaging: PASS
+Device-free tests: 16/16 PASS
+Retry policy tests: initial failure plus exactly 5 retries; no renewal reset; one terminal notification state; power/exit/shutdown policies PASS
+Local MSI upgrade: PASS, exit code 0
+OEM service: Stopped / Disabled
+Driver without tray beyond old lease timeout: Running, unchanged PID 4992
+Input acquisition: streaming heartbeat observed
+Failure notifications: native tray balloon wiring compiled; terminal failure transition and deduplication state covered by policy checks
+Hardware startup failure was not deliberately induced

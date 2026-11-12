@@ -1,0 +1,98 @@
+#pragma once
+
+#include "hpp2/Hpp2Pipeline.h"
+#include "hpp3/Hpp3Pipeline.h"
+#include "shared/CommonStylusPostPipeline.h"
+#include "shared/EdgeCoorProcess.hpp"
+#include "shared/EdgeCoorPostProcess.hpp"
+#include "shared/StylusFrameParser.hpp"
+#include "StylusRuntimeCommit.hpp"
+#include "SolverTypes.h"
+
+#include <array>
+#include <cstdint>
+#include <mutex>
+#include <string_view>
+
+namespace Config {
+class ConfigBinder;
+class ConfigStore;
+}
+
+struct DeviceRuntimePenStateTestAccess;
+
+namespace Solvers {
+
+enum class StylusProtocolHint : uint8_t {
+    Auto = 0,
+    Hpp2,
+    Hpp3,
+};
+
+struct StylusPenSession {
+    bool hasConnectionState = false;
+    bool connected = false;
+    bool hasStylusId = false;
+    uint8_t stylusId = 0;
+    StylusProtocolHint protocolHint = StylusProtocolHint::Auto;
+    uint32_t revision = 0;
+};
+
+class StylusPipeline {
+public:
+    StylusPipeline();
+
+    bool Process(HeatmapFrame& frame);
+
+    /// 面板机型（显示驱动 OTP 的 project id）：选 TX1 坐标的 dim1 走线间距表，与原厂一样取该机型
+    /// 参数表的 FlashPrmt + 0xA0。CSOT 与 BOE 的表补偿方向相反，选错时笔迹在长轴上以屏幕中心为原点
+    /// 两侧对称外偏，最大约 0.47 格（≈ 20 px）。构造时按缺省机型。
+    void SetPanelProjectId(std::string_view projectId);
+
+    void registerBindings(Config::ConfigBinder& binder);
+    void applyConfig(const Config::ConfigStore& store);
+
+    void SetBtMcuPressure(uint16_t pressure);
+    void SetBtMcuPressurePacket(const std::array<uint16_t, 4>& pressure,
+                                const std::array<uint16_t, 4>& rawPressure,
+                                uint8_t freq1,
+                                uint8_t freq2);
+    void ApplyPenSession(const StylusPenSession& session);
+
+    int GetPacketSensorRows() const { return kPacketSensorRows; }
+    int GetPacketSensorCols() const { return kPacketSensorCols; }
+    bool GetEmitPacketWhenInvalid() const { return true; }
+
+    // ── Shared / protocol-agnostic stages ──
+    Stylus::StylusFrameParser          m_frameParser;          // shared/
+    Stylus::EdgeCoorProcess            m_edgeCoorProcess;      // shared state used by HPP2/HPP3
+    Stylus::EdgeCoorPostProcess        m_edgeCoorPostProcess;  // shared edge remapping used by HPP2/HPP3
+    Stylus::CommonStylusPostPipeline   m_commonPost;           // shared ASA_CoorPostProcess tail
+    Stylus::StylusRuntimeCommit        m_commit;               // root
+
+    // ── Protocol-specific sub-pipelines ──
+    Stylus::Hpp2::Pipeline             m_hpp2;             // hpp2/
+    Stylus::Hpp3::Pipeline             m_hpp3;             // hpp3/
+
+private:
+    friend struct ::DeviceRuntimePenStateTestAccess;
+    void FinalizeTerminalFrame(HeatmapFrame& frame);
+    void ResetStatefulStages();
+    void ClearBtSample();
+    void ReadLatestBtSample(Asa::BtInputSnapshot& out) const;
+
+    StylusPenSession m_penSession{};
+    StylusRuntime::Protocol m_lastActiveProtocol = StylusRuntime::Protocol::None;
+    bool m_lastFrameWasTerminal = false;
+
+    // NOTE: In the current architecture, all callers are serialized by
+    // DeviceRuntime::m_pipelineMu. This mutex provides defense-in-depth
+    // if the pipeline is ever used outside that lock.
+    mutable std::mutex m_btMutex;
+    Asa::BtInputSnapshot m_btSample{};
+
+    static constexpr int kPacketSensorRows = 40;
+    static constexpr int kPacketSensorCols = 60;
+};
+
+} // namespace Solvers

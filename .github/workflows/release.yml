@@ -1,8 +1,6 @@
 name: Publish ARM64 MSI Release
 
 on:
-  push:
-    tags: [ 'v*.*.*' ]
   workflow_dispatch:
 
 permissions:
@@ -77,6 +75,7 @@ jobs:
                 -DCMAKE_C_COMPILER=cl `
                 -DCMAKE_CXX_COMPILER=cl `
                 -DHIMAX_ENABLE_NEON=ON `
+                -DEGO_GENERATE_PDB=OFF `
                 -DEGO_BUILD_TESTS=OFF `
                 -DEGO_BUILD_TOOLS=OFF
 
@@ -98,13 +97,15 @@ jobs:
           $assetDir = "build\release-assets"
           New-Item -ItemType Directory -Force -Path $assetDir | Out-Null
 
-          wix build -ext WixToolset.UI.wixext -ext WixToolset.Util.wixext -arch arm64 -d BuildVersion=$env:MSI_VERSION -d BuildOutputDir=build -d HalOutputDir=hal\build\Release scripts\OpenEGoHubSetup.wxs -loc scripts\zh-CN.wxl -out "$assetDir\OpenEGoHubSetup_arm64_$($env:RELEASE_TAG).msi"
+          ./scripts/GenerateHeadphoneAssets.ps1 -AssetRoot Tools/EGoTouchSettings/Assets/Headphones -OutputPath build/HeadphoneAssets.wxs -ManifestOnly
+
+          wix build -ext WixToolset.UI.wixext -ext WixToolset.Util.wixext -arch arm64 -d BuildVersion=$env:MSI_VERSION -d BuildOutputDir=build -d HalOutputDir=hal\build\Release scripts\OpenEGoHubSetup.wxs build\HeadphoneAssets.wxs -loc scripts\zh-CN.wxl -out "$assetDir\Ultra-EGoHub_arm64_$($env:RELEASE_TAG).msi"
 
       - name: Generate SHA256 checksums
         run: |
           $assetDir = "build\release-assets"
           $installers = @(
-            "$assetDir\OpenEGoHubSetup_arm64_$($env:RELEASE_TAG).msi"
+            "$assetDir\Ultra-EGoHub_arm64_$($env:RELEASE_TAG).msi"
           )
 
           $checksumLines = foreach ($installer in $installers) {
@@ -115,13 +116,13 @@ jobs:
             "$($hash.Hash)  $(Split-Path -Leaf $installer)"
           }
 
-          $checksumFile = "$assetDir\OpenEGoHub_arm64_$($env:RELEASE_TAG)_SHA256SUMS.txt"
+          $checksumFile = "$assetDir\Ultra-EGoHub_arm64_$($env:RELEASE_TAG)_SHA256SUMS.txt"
           $checksumLines | Set-Content -Path $checksumFile -Encoding UTF8
 
       - name: Upload release assets artifact
         uses: actions/upload-artifact@v4
         with:
-          name: openego-hub-arm64-${{ github.ref_name }}
+          name: ultra-egohub-arm64-${{ github.ref_name }}
           path: build/release-assets/*
           if-no-files-found: error
           retention-days: 7
@@ -134,14 +135,14 @@ jobs:
       - name: Download release assets artifact
         uses: actions/download-artifact@v4
         with:
-          name: openego-hub-arm64-${{ needs.build-arm64-release.outputs.release_tag }}
+          name: ultra-egohub-arm64-${{ needs.build-arm64-release.outputs.release_tag }}
           path: release-assets
 
       - name: Upload release assets
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.build-arm64-release.outputs.release_tag }}
-          name: OpenEGo Hub ${{ needs.build-arm64-release.outputs.release_tag }}
+          name: Ultra-EGoHub ${{ needs.build-arm64-release.outputs.release_tag }}
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |

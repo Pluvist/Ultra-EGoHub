@@ -5,29 +5,29 @@
        语言与包级信息
        ═══════════════════════════════════════════════════════════ -->
   <String Id="Language" Value="2052" />
-  <String Id="ProductName" Value="OpenEGo Hub" />
-  <String Id="Manufacturer" Value="OpenEGo Hub" />
+  <String Id="ProductName" Value="Ultra-EGoHub" />
+  <String Id="Manufacturer" Value="Ultra-EGoHub" />
   <String Id="DowngradeError" Value="已安装更高版本的 [ProductName]，安装无法继续。请先卸载现有版本后再试。" />
   <String Id="LicenseRtf" Value="scripts\EULA_zh-CN.rtf" />
 
   <!-- 开始菜单入口。名称不带「设置」二字：这个入口指向常驻托盘，打开设置只是托盘已在运行
        时的行为，写成「设置」会让首次点击的实际效果与名称不符。 -->
-  <String Id="ShortcutName" Value="OpenEGo Hub" />
-  <String Id="ShortcutDescription" Value="启动 OpenEGo Hub 托盘，查看配件状态并调整触控与笔设置。" />
+  <String Id="ShortcutName" Value="Ultra-EGoHub" />
+  <String Id="ShortcutDescription" Value="启动 Ultra-EGoHub 托盘，查看配件状态并调整触控与笔设置。" />
 
   <!-- ═══════════════════════════════════════════════════════════
        系统服务信息
        ═══════════════════════════════════════════════════════════ -->
-  <String Id="ServiceDisplayName" Value="OpenEGo Hub 触控服务" />
-  <String Id="ServiceDescription" Value="OpenEGo Hub 触控服务 — 管理触控提供方的接管与交还，并汇总笔与键盘的状态。该服务随系统自动启动，以 SYSTEM 账户运行，无需用户干预。" />
-  <String Id="ThpHostServiceDisplayName" Value="OpenEGo Hub 触控宿主" />
-  <String Id="ThpHostServiceDescription" Value="OpenEGo Hub 触控宿主 — 承载原厂触控算法链，由触控服务在接管时按需启动。该服务不随系统自启，以 SYSTEM 账户运行。" />
+  <String Id="ServiceDisplayName" Value="Ultra-EGoHub 触控服务" />
+  <String Id="ServiceDescription" Value="Ultra-EGoHub 触控服务 — 管理 EGoTouchRev 触控驱动，并汇总笔与键盘的状态。该服务随系统自动启动，以 SYSTEM 账户运行，无需用户干预。" />
+  <String Id="ThpHostServiceDisplayName" Value="Ultra-EGoHub 触控宿主" />
+  <String Id="ThpHostServiceDescription" Value="Ultra-EGoHub 触控宿主 — 运行原生 EGoTouchRev 输入驱动，由触控服务在接管时按需启动。该服务不随系统自启，以 SYSTEM 账户运行。" />
 
   <!-- ═══════════════════════════════════════════════════════════
        WixUI_InstallDir 欢迎页
        ═══════════════════════════════════════════════════════════ -->
   <String Id="WelcomeDlgTitle" Value="{\WixUI_Font_Title}欢迎安装 [ProductName]" />
-  <String Id="WelcomeDlgDescription" Value="{\WixUI_Font_Normal}本向导将引导您完成 [ProductName] 的安装。&#xA;&#xA;安装程序将部署 OpenEGo Hub 触控服务到您的设备，并以系统服务形式注册，随 Windows 自动启动。&#xA;&#xA;请单击&quot;下一步&quot;继续，或单击&quot;取消&quot;退出安装向导。" />
+  <String Id="WelcomeDlgDescription" Value="{\WixUI_Font_Normal}本向导将引导您完成 [ProductName] 的安装。&#xA;&#xA;安装程序将部署 Ultra-EGoHub 触控服务到您的设备，并以系统服务形式注册，随 Windows 自动启动。&#xA;&#xA;请单击&quot;下一步&quot;继续，或单击&quot;取消&quot;退出安装向导。" />
 
   <!-- ═══════════════════════════════════════════════════════════
        WixUI_InstallDir 许可协议页
@@ -60,7 +60,7 @@
   <String Id="ExitDlgTitle" Value="{\WixUI_Font_Title}[ProductName] 安装完成" />
   <String Id="ExitDlgDescription" Value="{\WixUI_Font_Normal}安装程序已将 [ProductName] 成功安装到您的设备。&#xA;&#xA;触控服务已自动启动并在后台运行。您可以通过 Windows 服务管理器查看其运行状态。&#xA;&#xA;单击&quot;完成&quot;退出安装向导。" />
 
-  <String Id="LaunchTrayCheckbox" Value="启动 OpenEGo Hub" />
+  <String Id="LaunchTrayCheckbox" Value="启动 Ultra-EGoHub" />
 
   <!-- 安装失败/取消页 -->
   <String Id="UserExitTitle" Value="{\WixUI_Font_Title}[ProductName] 安装已取消" />

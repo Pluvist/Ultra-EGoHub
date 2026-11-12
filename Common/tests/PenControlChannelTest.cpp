@@ -231,10 +231,26 @@ void TestConcurrentSubmitsStayConsistent() {
     Require(regressed == 0, "revision and timestamp never go backwards");
 }
 
+void TestHoverCommandRoundTrip() {
+    PenControl::Host host;
+    const auto scope=OpenHostForTest(host);
+    PenControl::Client client;
+    Require(client.Open(scope),"hover client opens");
+    for(bool enabled:{false,true}) {
+        Require(client.SubmitPenHoverEnabled(enabled),"hover submit");
+        PenControl::Command command;
+        Require(host.PollCommand(command),"hover received");
+        Require(command.hasPenHoverEnabled && command.penHoverEnabled==enabled,"hover boolean roundtrips");
+        Require(!command.hasPenButtonMode && !command.hasProviderLease && !command.hasUpdate,"hover cannot modify other settings");
+        Require(!host.PollCommand(command),"hover revision consumed once");
+    }
+}
+
 } // namespace
 
 int main() {
     try {
+        TestHoverCommandRoundTrip();
         TestClientFailsWithoutHost();
         TestSubmitRoundTrip();
         TestKbdDetachSupportRoundTripDoesNotLeakOtherFields();

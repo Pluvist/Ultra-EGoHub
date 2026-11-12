@@ -31,6 +31,30 @@
                 <Setter Property="MinHeight" Value="0" />
                 <Setter Property="Padding" Value="16,12" />
             </Style>
+            <Style x:Key="SettingsActionCardButtonStyle" TargetType="Button">
+                <Setter Property="MinHeight" Value="72" />
+                <Setter Property="Padding" Value="16,14" />
+                <Setter Property="CornerRadius" Value="12" />
+                <Setter Property="Background" Value="{ThemeResource CardBackgroundFillColorDefaultBrush}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeColorDefaultBrush}" />
+                <Setter Property="BorderThickness" Value="1" />
+                <Setter Property="HorizontalAlignment" Value="Stretch" />
+                <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            </Style>
+            <Style x:Key="HeadphoneMenuExpanderStyle" TargetType="Expander">
+                <Setter Property="MinHeight" Value="72" />
+                <Setter Property="Padding" Value="0" />
+                <Setter Property="CornerRadius" Value="12" />
+                <Setter Property="Background" Value="{ThemeResource CardBackgroundFillColorDefaultBrush}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeColorDefaultBrush}" />
+                <Setter Property="HorizontalAlignment" Value="Stretch" />
+                <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            </Style>
+            <Style x:Key="HeadphoneMenuRowStyle" TargetType="Border">
+                <Setter Property="MinHeight" Value="72" />
+                <Setter Property="Padding" Value="16,14" />
+                <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeColorDefaultBrush}" />
+            </Style>
 
             <Style x:Key="SettingsGroupHeaderStyle" TargetType="TextBlock"
                    BasedOn="{StaticResource BodyStrongTextBlockStyle}">
@@ -69,6 +93,29 @@
                 <Setter Property="VerticalAlignment" Value="Center" />
             </Style>
 
+            <Style x:Key="HeadphoneRowIconStyle" TargetType="FontIcon"
+                   BasedOn="{StaticResource SettingsRowIconStyle}">
+                <Setter Property="FontFamily" Value="Segoe Fluent Icons" />
+                <Setter Property="Height" Value="24" />
+                <Setter Property="HorizontalAlignment" Value="Center" />
+            </Style>
+            <Style x:Key="HeadphoneGroupIconStyle" TargetType="FontIcon"
+                   BasedOn="{StaticResource SpecGroupIconStyle}">
+                <Setter Property="FontFamily" Value="Segoe Fluent Icons" />
+                <Setter Property="Width" Value="24" />
+                <Setter Property="Height" Value="24" />
+                <Setter Property="FontSize" Value="20" />
+                <Setter Property="HorizontalAlignment" Value="Center" />
+            </Style>
+            <Style x:Key="HeadphoneActionIconStyle" TargetType="FontIcon">
+                <Setter Property="FontFamily" Value="Segoe Fluent Icons" />
+                <Setter Property="FontSize" Value="20" />
+                <Setter Property="Width" Value="24" />
+                <Setter Property="Height" Value="24" />
+                <Setter Property="VerticalAlignment" Value="Center" />
+                <Setter Property="HorizontalAlignment" Value="Center" />
+            </Style>
+
             <!-- 设备页的一行属性：左标签右取值，取值缺失时整行由代码隐藏。 -->
             <Style x:Key="DeviceFieldLabelStyle" TargetType="TextBlock"
                    BasedOn="{StaticResource CaptionTextBlockStyle}">
@@ -92,7 +139,7 @@
             x:Name="AppTitleBar"
             Grid.Row="0"
             Height="48"
-            Title="OpenEGo Hub">
+            Title="Ultra-EGoHub">
             <!-- 图标在代码里设，见 SetTitleBarIconAsync：图片嵌在 exe 的 RCDATA 里，
                  XAML 这边没法直接引。
                  不要改用 PathIconSource——那会让窗口一显示就抛 0xC000027B，是
@@ -211,12 +258,15 @@
                 </StackPanel>
 
                 <!-- ── 设备页 ── -->
-                <ScrollViewer
+                <ScrollViewer Background="Transparent"
                     x:Name="DevicesPage"
                     Grid.Row="1"
                     SizeChanged="DeviceCardsSizeChanged"
+                    HorizontalScrollMode="Disabled"
+                    VerticalScrollMode="Enabled"
                     VerticalScrollBarVisibility="Auto"
                     HorizontalScrollBarVisibility="Disabled"
+                    ZoomMode="Disabled"
                     VerticalContentAlignment="Stretch">
                     <Grid>
                     <!-- 提示条与卡片网格并列放进 StackPanel，而不是给网格加一行：网格的
@@ -229,8 +279,8 @@
                         IsOpen="False"
                         IsClosable="False"
                         Severity="Warning"
-                        Title="未找到电脑管家的配件组件"
-                        Message="配件状态依赖华为电脑管家自带的组件，当前未能加载，电量与固件信息不可用。重新安装华为电脑管家后会自动恢复。" />
+                        Title="笔与键盘信息暂不可用"
+                        Message="笔与键盘状态依赖华为电脑管家自带的组件，当前未能加载。重新安装华为电脑管家后可恢复电量与固件信息。" />
                     <Grid x:Name="DeviceCards" Padding="24,8,24,24"
                           ColumnSpacing="24" RowSpacing="24">
                         <Grid.ColumnDefinitions>
@@ -240,6 +290,7 @@
                             <ColumnDefinition x:Name="DeviceSecondColumn" Width="0" />
                         </Grid.ColumnDefinitions>
                         <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
@@ -345,6 +396,25 @@
                                         <ComboBoxItem Content="遵循系统笔设置" />
                                         <ComboBoxItem Content="切换书写与橡皮擦" />
                                     </ComboBox>
+                                </Grid>
+                            </Border>
+                            <Border Style="{StaticResource SettingsCardStyle}">
+                                <Grid ColumnSpacing="16" VerticalAlignment="Center">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <FontIcon Glyph="&#xEDC6;" Style="{StaticResource SettingsRowIconStyle}" />
+                                    <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
+                                        <TextBlock Text="笔悬停" TextWrapping="Wrap" />
+                                        <TextBlock Text="笔靠近屏幕时显示光标并触发悬停效果。关闭后仍可落笔书写。"
+                                                   Style="{StaticResource SettingsDescriptionStyle}" />
+                                    </StackPanel>
+                                    <ToggleSwitch x:Name="PenHoverToggle" Grid.Column="2" IsOn="True"
+                                                  IsEnabled="False" MinWidth="0" OnContent="" OffContent=""
+                                                  Margin="0,0,-12,0" HorizontalAlignment="Right"
+                                                  VerticalAlignment="Center" Toggled="PenHoverToggled" />
                                 </Grid>
                             </Border>
                             <Border x:Name="OneNoteCompatibilityRow" Style="{StaticResource SettingsCardStyle}">
@@ -458,6 +528,119 @@
                                 </Grid>
                             </Border>
                         </StackPanel>
+                        <StackPanel x:Name="HeadphoneGroup" Grid.Row="2" Grid.ColumnSpan="2" Spacing="4">
+                            <TextBlock Text="耳机" Style="{StaticResource SettingsGroupHeaderStyle}" />
+                            <Grid x:Name="HeadphoneOverviewCards">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition x:Name="HeadphoneOverviewSecondColumn" Width="0" />
+                                </Grid.ColumnDefinitions>
+                            <Border Style="{StaticResource SettingsCardCompactStyle}" VerticalAlignment="Top">
+                                <StackPanel Spacing="12">
+                                    <Grid ColumnSpacing="16">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Grid Width="104" Height="72" VerticalAlignment="Center">
+                                            <Image x:Name="HeadphoneImage" Stretch="Uniform" Visibility="Collapsed" />
+                                            <FontIcon x:Name="HeadphoneImageFallback" Glyph="&#xE7F6;" Style="{StaticResource HeadphoneRowIconStyle}" />
+                                        </Grid>
+                                        <StackPanel Grid.Column="1" Spacing="4" VerticalAlignment="Center">
+                                            <TextBlock x:Name="HeadphoneNameText" Text="华为耳机" Style="{ThemeResource BodyStrongTextBlockStyle}" TextWrapping="Wrap" />
+                                            <TextBlock x:Name="HeadphoneStateText" Text="请先在 Windows 蓝牙设置中连接耳机。" Style="{StaticResource SettingsDescriptionStyle}" />
+                                        </StackPanel>
+                                    </Grid>
+                                    <ComboBox x:Name="HeadphoneDevicePicker" PlaceholderText="正在查找已配对的耳机…" HorizontalAlignment="Stretch" SelectionChanged="HeadphoneSelectionChanged" />
+                                    <StackPanel x:Name="HeadphoneBatteryRow" Orientation="Horizontal" Spacing="24" Visibility="Collapsed">
+                                        <StackPanel Spacing="4"><TextBlock Text="左耳" Style="{StaticResource SettingsDescriptionStyle}" /><local:BatteryIndicator x:Name="HeadphoneLeftBattery" /></StackPanel>
+                                        <StackPanel Spacing="4"><TextBlock Text="右耳" Style="{StaticResource SettingsDescriptionStyle}" /><local:BatteryIndicator x:Name="HeadphoneRightBattery" /></StackPanel>
+                                        <StackPanel Spacing="4"><TextBlock Text="充电盒" Style="{StaticResource SettingsDescriptionStyle}" /><local:BatteryIndicator x:Name="HeadphoneCaseBattery" /></StackPanel>
+                                    </StackPanel>
+                                    <StackPanel Orientation="Horizontal" Spacing="8">
+                                        <Button x:Name="HeadphoneRefreshButton" Click="HeadphoneRefreshClicked" AutomationProperties.Name="连接 / 刷新">
+                                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                                <FontIcon Glyph="&#xE72C;" Style="{StaticResource HeadphoneActionIconStyle}" />
+                                                <TextBlock Text="连接 / 刷新" VerticalAlignment="Center" />
+                                            </StackPanel>
+                                        </Button>
+                                        <Button x:Name="HeadphoneReconnectButton" IsEnabled="False" Click="HeadphoneReconnectClicked" AutomationProperties.Name="立即重连">
+                                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                                <FontIcon Glyph="&#xE71B;" Style="{StaticResource HeadphoneActionIconStyle}" />
+                                                <TextBlock Text="立即重连" VerticalAlignment="Center" />
+                                            </StackPanel>
+                                        </Button>
+                                    </StackPanel>
+                                    <HyperlinkButton Content="Windows 蓝牙设置" NavigateUri="ms-settings:bluetooth" HorizontalAlignment="Left" Padding="0" />
+                                </StackPanel>
+                            </Border>
+                            </Grid>
+                            <Grid x:Name="HeadphoneControlRows" RowSpacing="4" Visibility="Collapsed">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition x:Name="HeadphoneControlSecondColumn" Width="0" />
+                                </Grid.ColumnDefinitions>
+                            </Grid>
+                            <Grid x:Name="HeadphoneAdvancedCards" RowSpacing="4">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition x:Name="HeadphoneAdvancedSecondColumn" Width="0" />
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                            <Expander x:Name="HeadphonePeersCard" Style="{StaticResource HeadphoneMenuExpanderStyle}"
+                                      IsExpanded="True" Visibility="Collapsed">
+                                <Expander.Header>
+                                    <StackPanel Orientation="Horizontal" Spacing="12">
+                                        <FontIcon Glyph="&#xE975;" Style="{StaticResource HeadphoneRowIconStyle}" />
+                                        <TextBlock Text="耳机已配对设备" Style="{ThemeResource BodyStrongTextBlockStyle}" VerticalAlignment="Center" />
+                                    </StackPanel>
+                                </Expander.Header>
+                                <StackPanel>
+                                    <TextBlock x:Name="HeadphonePeersStatus" Margin="16,12,16,0" Text="刷新后显示耳机保存的连接设备。" Style="{StaticResource SettingsDescriptionStyle}" />
+                                    <Grid x:Name="HeadphonePeerRows">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="0" />
+                                        </Grid.ColumnDefinitions>
+                                    </Grid>
+                                </StackPanel>
+                            </Expander>
+                            <Border x:Name="HeadphoneEqualizerCard" Visibility="Collapsed">
+                                <Button x:Name="HeadphoneEqualizerEditor" AutomationProperties.Name="自定义均衡器"
+                                        Style="{StaticResource SettingsActionCardButtonStyle}" Click="HeadphoneEqualizerClicked">
+                                        <Grid ColumnSpacing="16">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <FontIcon Glyph="&#xE9E9;" Style="{StaticResource HeadphoneRowIconStyle}" />
+                                            <TextBlock Grid.Column="1" Text="自定义均衡器" VerticalAlignment="Center" />
+                                            <FontIcon Grid.Column="2" Glyph="&#xE76C;" Style="{StaticResource HeadphoneRowIconStyle}" />
+                                        </Grid>
+                                </Button>
+                            </Border>
+                            <Border x:Name="HeadphoneFastReconnectCard" Style="{StaticResource SettingsCardStyle}" VerticalAlignment="Top">
+                                <Grid ColumnSpacing="16">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <FontIcon Glyph="&#xE895;" Style="{StaticResource HeadphoneRowIconStyle}" />
+                                    <StackPanel Grid.Column="1" Spacing="4" VerticalAlignment="Center">
+                                        <TextBlock Text="加快耳机重连" TextWrapping="Wrap" />
+                                        <TextBlock Text="耳机再次出现时及时尝试重连。离线时自动结束本轮重试。" Style="{StaticResource SettingsDescriptionStyle}" />
+                                    </StackPanel>
+                                    <ToggleSwitch x:Name="HeadphoneFastReconnectToggle" Grid.Column="2" MinWidth="0" OnContent="" OffContent=""
+                                                  Margin="0,0,-12,0" HorizontalAlignment="Right" VerticalAlignment="Center" Toggled="HeadphoneFastReconnectToggled" />
+                                </Grid>
+                            </Border>
+                            </Grid>
+                        </StackPanel>
                     </Grid>
                     </StackPanel>
 
@@ -478,12 +661,15 @@
                 </ScrollViewer>
 
                 <!-- ── 电池页 ── -->
-                <ScrollViewer
+                <ScrollViewer Background="Transparent"
                     x:Name="BatteryPage"
                     Grid.Row="1"
                     Visibility="Collapsed"
+                    HorizontalScrollMode="Disabled"
+                    VerticalScrollMode="Enabled"
                     VerticalScrollBarVisibility="Auto"
-                    HorizontalScrollBarVisibility="Disabled">
+                    HorizontalScrollBarVisibility="Disabled"
+                    ZoomMode="Disabled">
                     <StackPanel Padding="24,8,24,24" Spacing="24">
 
                         <!-- 当前状态。电量与剩余时间同属高频项，一起刷新。
@@ -598,6 +784,29 @@
                             </Border>
                         </StackPanel>
 
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="节能" Style="{StaticResource SettingsGroupHeaderStyle}" />
+                            <Border Style="{StaticResource SettingsCardStyle}">
+                                <Grid ColumnSpacing="16" VerticalAlignment="Center">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <FontIcon Glyph="&#xE8BE;" FontFamily="Segoe Fluent Icons" Style="{StaticResource SettingsRowIconStyle}" />
+                                    <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
+                                        <TextBlock Text="EnergyStar 节能" TextWrapping="Wrap" />
+                                        <TextBlock Text="降低后台应用功耗，切回前台时恢复响应；接电时也生效。" Style="{StaticResource SettingsDescriptionStyle}" />
+                                        <TextBlock x:Name="EnergyStarStatusText" Text="正在读取实际状态…" Style="{StaticResource SettingsDescriptionStyle}" />
+                                    </StackPanel>
+                                    <ToggleSwitch x:Name="EnergyStarToggle" Grid.Column="2" IsOn="False" IsEnabled="False"
+                                                  MinWidth="0" OnContent="" OffContent="" Margin="0,0,-12,0"
+                                                  HorizontalAlignment="Right" VerticalAlignment="Center"
+                                                  AutomationProperties.Name="EnergyStar 节能" Toggled="EnergyStarToggled" />
+                                </Grid>
+                            </Border>
+                        </StackPanel>
+
                         <!-- 健康与标识都是低频项，打开面板读一次即可，不随电量刷新。 -->
                         <StackPanel Spacing="4">
                             <StackPanel Style="{StaticResource GroupHeaderRowStyle}">
@@ -681,12 +890,15 @@
                 </ScrollViewer>
 
                 <!-- ── 屏幕页 ── -->
-                <ScrollViewer
+                <ScrollViewer Background="Transparent"
                     x:Name="ScreenPage"
                     Grid.Row="1"
                     Visibility="Collapsed"
+                    HorizontalScrollMode="Disabled"
+                    VerticalScrollMode="Enabled"
                     VerticalScrollBarVisibility="Auto"
-                    HorizontalScrollBarVisibility="Disabled">
+                    HorizontalScrollBarVisibility="Disabled"
+                    ZoomMode="Disabled">
                     <StackPanel Padding="24,8,24,24" Spacing="24">
 
                         <!-- 色彩对照。照片看整体观感，灰阶看有没有偏色——中性色上最藏不住，
@@ -878,12 +1090,15 @@
                 </ScrollViewer>
 
                 <!-- ── 通用页 ── -->
-                <ScrollViewer
+                <ScrollViewer Background="Transparent"
                     x:Name="GeneralPage"
                     Grid.Row="1"
                     Visibility="Collapsed"
+                    HorizontalScrollMode="Disabled"
+                    VerticalScrollMode="Enabled"
                     VerticalScrollBarVisibility="Auto"
-                    HorizontalScrollBarVisibility="Disabled">
+                    HorizontalScrollBarVisibility="Disabled"
+                    ZoomMode="Disabled">
                     <StackPanel Padding="24,8,24,24" Spacing="24">
 
                         <!-- 每个 ToggleSwitch 上的 MinWidth / OnContent / OffContent / Margin 是一组，
@@ -913,6 +1128,7 @@
                                     </StackPanel>
                                     <ToggleSwitch
                                         x:Name="TouchProviderToggle"
+                                        IsEnabled="False"
                                         Grid.Column="2"
                                         MinWidth="0"
                                         OnContent=""
@@ -981,9 +1197,9 @@
                                          而 E7E7（ActionCenterNotification）是实心横幅，混在里面很扎眼。 -->
                                     <FontIcon Glyph="&#xEA8F;" Style="{StaticResource SettingsRowIconStyle}" />
                                     <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
-                                        <TextBlock Text="设备提示弹窗" TextWrapping="Wrap" />
+                                        <TextBlock Text="设备提示" TextWrapping="Wrap" />
                                         <TextBlock
-                                            Text="手写笔或键盘接入时显示提示。"
+                                            Text="配件接入时显示提示，键盘由分离变为吸附时显示屏幕边缘光晕。"
                                             Style="{StaticResource SettingsDescriptionStyle}" />
                                     </StackPanel>
                                     <ToggleSwitch
@@ -1096,12 +1312,15 @@
                 </ScrollViewer>
 
                 <!-- ── 设备页 ── -->
-                <ScrollViewer
+                <ScrollViewer Background="Transparent"
                     x:Name="DevicePage"
                     Grid.Row="1"
                     Visibility="Collapsed"
+                    HorizontalScrollMode="Disabled"
+                    VerticalScrollMode="Enabled"
                     VerticalScrollBarVisibility="Auto"
-                    HorizontalScrollBarVisibility="Disabled">
+                    HorizontalScrollBarVisibility="Disabled"
+                    ZoomMode="Disabled">
                     <StackPanel Padding="24,8,24,24" Spacing="24">
 
                         <!-- 整机图取自本机键盘插件里的 snapping.png，见 AccessoryImages::ResolveMachine。
@@ -1260,12 +1479,15 @@
                 </ScrollViewer>
 
                 <!-- ── 关于页 ── -->
-                <ScrollViewer
+                <ScrollViewer Background="Transparent"
                     x:Name="AboutPage"
                     Grid.Row="1"
                     Visibility="Collapsed"
+                    HorizontalScrollMode="Disabled"
+                    VerticalScrollMode="Enabled"
                     VerticalScrollBarVisibility="Auto"
-                    HorizontalScrollBarVisibility="Disabled">
+                    HorizontalScrollBarVisibility="Disabled"
+                    ZoomMode="Disabled">
                     <StackPanel Padding="24,8,24,24" Spacing="24">
 
                         <!-- 关于页是标记唯一以完整三层出现的地方。这里不缩到图标尺寸，
@@ -1329,7 +1551,7 @@
                                 </Grid>
                             </Viewbox>
                             <StackPanel Grid.Column="1" Spacing="4" VerticalAlignment="Center">
-                                <TextBlock Text="OpenEGo Hub" Style="{StaticResource TitleTextBlockStyle}" />
+                                <TextBlock Text="Ultra-EGoHub" Style="{StaticResource TitleTextBlockStyle}" />
                                 <TextBlock Text="HUAWEI MateBook E Go 硬件控制中心"
                                            Style="{StaticResource SettingsDescriptionStyle}" />
                             </StackPanel>
@@ -1440,10 +1662,10 @@
                                     <HyperlinkButton
                                         Grid.Column="2"
                                         VerticalAlignment="Center"
-                                        Content="NihilDigit/openego-hub"
+                                        Content="Pluvist/Ultra-EGoHub"
                                         Padding="0"
                                         HorizontalAlignment="Left"
-                                        NavigateUri="https://github.com/NihilDigit/openego-hub" />
+                                        NavigateUri="https://github.com/Pluvist/Ultra-EGoHub" />
                                 </Grid>
                             </Border>
                             <Border Style="{StaticResource SettingsCardStyle}">
@@ -1463,11 +1685,11 @@
                                     <HyperlinkButton
                                         Content="MIT License"
                                         Padding="0"
-                                        NavigateUri="https://github.com/NihilDigit/openego-hub/blob/main/LICENSE" />
+                                        NavigateUri="https://github.com/Pluvist/Ultra-EGoHub/blob/main/LICENSE" />
                                     <HyperlinkButton
                                         Content="第三方许可"
                                         Padding="0"
-                                        NavigateUri="https://github.com/NihilDigit/openego-hub/blob/main/THIRD-PARTY-NOTICES.md" />
+                                        NavigateUri="https://github.com/Pluvist/Ultra-EGoHub/blob/main/THIRD-PARTY-NOTICES.md" />
                                     </StackPanel>
                                 </Grid>
                             </Border>
@@ -1515,5 +1737,34 @@
                 </ScrollViewer>
             </Grid>
         </NavigationView>
+        <ContentDialog x:Name="HeadphoneEqualizerDialog" Grid.RowSpan="2" AutomationProperties.Name="自定义均衡器"
+                       PrimaryButtonText="保存并应用" CloseButtonText="关闭" DefaultButton="None"
+                       PrimaryButtonClick="HeadphoneEqualizerPrimaryClicked"
+                       Closing="HeadphoneEqualizerDialogClosing">
+            <ContentDialog.Title>
+                <StackPanel Orientation="Horizontal" Spacing="12">
+                    <FontIcon Glyph="&#xE9E9;" Style="{StaticResource HeadphoneRowIconStyle}" />
+                    <TextBlock Text="自定义均衡器" VerticalAlignment="Center" />
+                </StackPanel>
+            </ContentDialog.Title>
+            <ScrollViewer Background="Transparent" x:Name="HeadphoneEqualizerScroll" MaxHeight="480"
+                    HorizontalScrollMode="Disabled"
+                        VerticalScrollMode="Enabled" VerticalScrollBarVisibility="Auto"
+                        HorizontalScrollBarVisibility="Disabled" ZoomMode="Disabled">
+                <StackPanel Spacing="16">
+                    <TextBlock Text="调节 10 个频段，保存并应用到所选自定义音效。" Style="{StaticResource SettingsDescriptionStyle}" />
+                    <ContentControl x:Name="HeadphoneEqualizerFields" HorizontalContentAlignment="Stretch" IsTabStop="False">
+                    <StackPanel Spacing="12">
+                        <ComboBox x:Name="HeadphonePresetSlot" Header="保存位置" HorizontalAlignment="Stretch">
+                            <ComboBoxItem Content="自定义音效 1" /><ComboBoxItem Content="自定义音效 2" /><ComboBoxItem Content="自定义音效 3" />
+                        </ComboBox>
+                        <TextBox x:Name="HeadphonePresetName" Header="音效名称" Text="OpenEGoHub" MaxLength="32" />
+                        <StackPanel x:Name="HeadphoneEqualizerBands" Spacing="4" />
+                    </StackPanel>
+                    </ContentControl>
+                    <TextBlock x:Name="HeadphoneEqualizerStatus" Visibility="Collapsed" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
+                </StackPanel>
+            </ScrollViewer>
+        </ContentDialog>
     </Grid>
 </Window>

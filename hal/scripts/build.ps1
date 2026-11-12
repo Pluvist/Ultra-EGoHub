@@ -3,19 +3,9 @@
     构建 gaokun-hal 的两个目标。
 
 .DESCRIPTION
-    两个目标的架构是不同的，这是本项目的结构要点，不是构建上的偶然：
-
-      GaokunThpHost.exe        ARM64EC。它在自己的进程里加载 x64 的 THP_Service.dll 及其
-                           整条依赖链，所以必须是 EC——纯 ARM64 进程加载不了 x64 DLL。
-      GaokunHal.lib        原生 ARM64。只用 Win32 的进程与同步原语，不碰任何华为 DLL，
-                           因此调用方（OpenEGoHub 的 UI 层）不必改成 ARM64EC。
-
-    进程边界同时也是架构边界。goodies 的作者卡在「没有现代 GUI 框架支持 arm64ec」，
-    这个分法正好绕开它：EC 只存在于后端进程里。
-
-    ARM64EC 产物的 PE machine 字段是 0x8664（x64），这是正常形态——它对加载器伪装成 x64
-    以便与 x64 DLL 共存。真正的判据是 load config 里的 CHPEMetadataPointer 非零，-Verify
-    检查的是这一点，不要用 machine 字段判断构建是否成功。
+    Builds the remaining display, keyboard and accessory hosts as ARM64EC, and
+    the controller library and power tools as native ARM64. Input is provided by
+    EGoTouchRev, built by the main CMake project, not by a vendor touch host here.
 
 .PARAMETER Config
     Debug 或 Release，默认 Release。
@@ -34,7 +24,7 @@ $ErrorActionPreference = 'Stop'
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $OutDir = Join-Path $RepoRoot "build\$Config"
-$HostExe = Join-Path $OutDir 'GaokunThpHost.exe'
+$HostExe = Join-Path $OutDir 'GaokunPenHost.exe'
 $HostLib = Join-Path $OutDir 'GaokunHal.lib'
 
 function Import-VsDevEnv {
@@ -113,7 +103,6 @@ $nativeCrt = @(if ($Config -eq 'Release') { '/MT' } else { '/MTd' })
 
 # 加新组件只需在这张表里加一行。凡是要加载华为 x64 DLL 的，一律 ARM64EC。
 $ecTargets = @(
-    @{ Name = 'GaokunThpHost.exe';      Dir = 'thp';      Libs = @('advapi32.lib') },
     # ole32 用于环境光传感器的 COM，advapi32 用于色彩状态的注册表——色温、护眼、自然色彩
     # 三项各自是一次性命令，状态不持久化就会互相清掉。传感器的 GUID 由 initguid.h 就地定义、
     # 接口 IID 走 __uuidof，所以不需要 sensorsapi.lib。
@@ -219,7 +208,7 @@ if ($Verify) {
 
     $h = Get-PeInfo $HostExe
     Write-Host ("host: machine=0x{0:x4} CHPEMetadataPointer=0x{1:x}" -f $h.Machine, $h.Chpe)
-    if ($h.Chpe -eq 0) { throw "GaokunThpHost.exe is not ARM64EC." }
+    if ($h.Chpe -eq 0) { throw "GaokunPenHost.exe is not ARM64EC." }
     Write-Host "[ok] host is ARM64EC" -ForegroundColor Green
 
     # 静态库里没有 PE 头，用 dumpbin 读成员对象的目标架构。原生 ARM64 应报 ARM64，

@@ -358,6 +358,10 @@ bool Writer::Publish(const State& state) {
         if (state.penVendorMissing) staged.hostHealth |= kHostHealthPenVendorMissing;
         if (state.kbdVendorMissing) staged.hostHealth |= kHostHealthKbdVendorMissing;
     }
+    if(state.hasPenHoverEnabled) {
+        staged.hostHealth |= kPenHoverKnown;
+        if(state.penHoverEnabled)staged.hostHealth |= kPenHoverEnabled;
+    }
     staged.updatedAtUnixMs = NowUnixMs();
     std::strncpy(staged.modelName, state.modelName, sizeof(staged.modelName) - 1);
     std::strncpy(staged.penFirmware, state.penFirmware, sizeof(staged.penFirmware) - 1);
@@ -475,6 +479,8 @@ bool Reader::Read(State& out) const {
             candidate.providerError = copy.providerError;
             candidate.kbdBatteryLevel = copy.kbdBatteryLevel;
             candidate.chargeLimit = copy.chargeLimit;
+            candidate.hasPenHoverEnabled=(copy.hostHealth & kPenHoverKnown)!=0;
+            candidate.penHoverEnabled=(copy.hostHealth & kPenHoverEnabled)!=0;
             candidate.hasHostHealth = (copy.hostHealth & kHostHealthValid) != 0;
             candidate.penHostHealthy = (copy.hostHealth & kHostHealthPen) != 0;
             candidate.kbdHostHealthy = (copy.hostHealth & kHostHealthKbd) != 0;

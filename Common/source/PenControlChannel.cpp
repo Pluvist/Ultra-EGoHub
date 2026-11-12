@@ -288,6 +288,8 @@ bool Host::PollCommand(Command& out) {
     m_lastRevision = copy.revision;
 
     Command command{};
+    command.hasPenHoverEnabled = (copy.flags & kFlagHasPenHover) != 0;
+    command.penHoverEnabled = (copy.flags & kFlagPenHoverEnabled) != 0;
     command.hasPenButtonMode = (copy.flags & kFlagHasPenButtonMode) != 0;
     command.penButtonMode = copy.penButtonMode;
     command.hasProviderLease = (copy.flags & kFlagHasProviderLease) != 0;
@@ -376,6 +378,13 @@ void Client::Close() {
         CloseHandle(m_submitEvent);
         m_submitEvent = nullptr;
     }
+}
+
+bool Client::SubmitPenHoverEnabled(bool enabled) {
+    if(!m_view)return false;
+    Payload staged{};
+    staged.flags=kFlagHasPenHover|(enabled?kFlagPenHoverEnabled:0u);
+    return Submit(staged);
 }
 
 bool Client::SubmitPenButtonMode(uint8_t mode) {

@@ -29,7 +29,7 @@ namespace {
 // GitHub 对未认证请求的限额是每小时 60 次，而这里一天最多几次，不需要令牌，也不该带：
 // 服务跑在 LocalSystem 下，机器上没有哪个凭据是属于「这台机器」的。
 constexpr wchar_t kApiBaseUrlDefault[] = L"https://api.github.com";
-constexpr wchar_t kApiPath[] = L"/repos/NihilDigit/openego-hub/releases/latest";
+constexpr wchar_t kApiPath[] = L"/repos/Pluvist/Ultra-EGoHub/releases/latest";
 
 // 直连 GitHub 不通时的镜像。国内直连 api.github.com 经常超时，这是唯一的回退路径。
 // 换镜像只改这一个常量。
@@ -45,14 +45,14 @@ constexpr wchar_t kMirrorPrefix[] = L"https://ghfast.top/";
 // github.com 的 releases/latest 那一跳的 Location 里取，资产地址则按发布流程的命名约定
 // 拼出来——那条路上没有 JSON 可读。命名见 .github/workflows/release.yml。
 constexpr wchar_t kReleasesLatestUrl[] =
-    L"https://github.com/NihilDigit/openego-hub/releases/latest";
+    L"https://github.com/Pluvist/Ultra-EGoHub/releases/latest";
 constexpr wchar_t kReleaseDownloadBase[] =
-    L"https://github.com/NihilDigit/openego-hub/releases/download/";
+    L"https://github.com/Pluvist/Ultra-EGoHub/releases/download/";
 
 // GitHub 无条件要求 User-Agent，缺了这一个头就是 403，不是 400，排查时很容易看岔。
 #define OPENEGO_WIDE_INNER(x) L##x
 #define OPENEGO_WIDE(x) OPENEGO_WIDE_INNER(x)
-constexpr wchar_t kUserAgent[] = L"OpenEGoHub/" OPENEGO_WIDE(OPENEGO_VERSION_STRING);
+constexpr wchar_t kUserAgent[] = L"Ultra-EGoHub/" OPENEGO_WIDE(OPENEGO_VERSION_STRING);
 
 constexpr wchar_t kApiHeaders[] =
     L"Accept: application/vnd.github+json\r\n"
@@ -668,10 +668,10 @@ std::optional<ReleaseInfo> FetchLatestViaMirror(uint32_t& error) {
 
     ReleaseInfo info{};
     info.version = *version;
-    info.msiFileName = L"OpenEGoHubSetup_arm64_" + wideTag + L".msi";
+    info.msiFileName = L"Ultra-EGoHub_arm64_" + wideTag + L".msi";
     info.msiUrl = WithMirror(directory + info.msiFileName);
     info.checksumUrl =
-        WithMirror(directory + L"OpenEGoHub_arm64_" + wideTag + L"_SHA256SUMS.txt");
+        WithMirror(directory + L"Ultra-EGoHub_arm64_" + wideTag + L"_SHA256SUMS.txt");
     return info;
 }
 

@@ -41,3 +41,7 @@ out.bin
 *.obj
 *.ilk
 *.exe
+
+# Huawei product images are local artwork.
+/Tools/EGoTouchSettings/Assets/Headphones/**/*.png
+/hal/vendor/qdcmlib.dll

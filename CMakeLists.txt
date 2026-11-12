@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(EGoTouchRev VERSION 0.5.3 LANGUAGES C CXX)
+project(EGoTouchRev VERSION 0.5.41 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -326,6 +326,7 @@ endif()
 target_include_directories(EGoTouchService PRIVATE
     "${SERVICE_ROOT}/include"
     "${GAOKUN_HAL_ROOT}/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/shared"
 )
 # winhttp 与 bcrypt 只有更新检查用到：前者是这棵树上唯一的 HTTP 客户端，后者算安装包的
 # SHA256。wtsapi32 与 userenv 是升级装完之后把托盘拉回用户会话那一步用的（WTSQueryUserToken
@@ -348,6 +349,122 @@ add_custom_command(
 )
 add_custom_target(EGoTouchPenRuntime ALL DEPENDS "${EGO_PEN_HOST_EXE}")
 add_dependencies(EGoTouchService EGoTouchPenRuntime)
+
+include(cmake/EGoTouchDriver.cmake)
+
+if(EGO_BUILD_TESTS)
+    add_executable(EdgeRejectionPolicyTest EGoTouchService/tests/unit/EdgeRejectionPolicyTest.cpp)
+    target_include_directories(EdgeRejectionPolicyTest PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/EGoTouchRev/EGoTouchService/Solvers/TouchSolver/TsaCore")
+    add_test(NAME EdgeRejectionPolicyTest COMMAND EdgeRejectionPolicyTest)
+    set_tests_properties(EdgeRejectionPolicyTest PROPERTIES LABELS "unit;service;device-free" TIMEOUT 10)
+    add_test(NAME HimaxAdapterEfficiencyTest COMMAND "${EGOTOUCH_DRIVER_DIR}/EGoTouchAdapterTest.exe")
+    set_tests_properties(HimaxAdapterEfficiencyTest PROPERTIES LABELS "unit;service;device-free" TIMEOUT 10)
+    add_test(NAME TsaOutputTapIntegrationTest COMMAND "${EGOTOUCH_DRIVER_DIR}/EGoTouchCoreTapTest.exe")
+    set_tests_properties(TsaOutputTapIntegrationTest PROPERTIES LABELS "integration;service;device-free" TIMEOUT 10)
+    add_executable(HeadphoneConnectionPolicyTest Common/tests/HeadphoneConnectionPolicyTest.cpp)
+    target_include_directories(HeadphoneConnectionPolicyTest PRIVATE Common/include)
+    add_test(NAME HeadphoneConnectionPolicyTest COMMAND HeadphoneConnectionPolicyTest)
+    set_tests_properties(HeadphoneConnectionPolicyTest PROPERTIES LABELS "unit;Common;device-free" TIMEOUT 10)
+    add_executable(KeyboardAttachmentEdgeTest Common/tests/KeyboardAttachmentEdgeTest.cpp)
+    target_include_directories(KeyboardAttachmentEdgeTest PRIVATE Common/include)
+    add_test(NAME KeyboardAttachmentEdgeTest COMMAND KeyboardAttachmentEdgeTest)
+    set_tests_properties(KeyboardAttachmentEdgeTest PROPERTIES LABELS "unit;Common;device-free" TIMEOUT 10)
+
+    add_executable(EnergyStarPolicyTest Common/tests/EnergyStarPolicyTest.cpp)
+    target_include_directories(EnergyStarPolicyTest PRIVATE Common/include)
+    add_test(NAME EnergyStarPolicyTest COMMAND EnergyStarPolicyTest)
+    set_tests_properties(EnergyStarPolicyTest PROPERTIES LABELS "unit;Common;device-free" TIMEOUT 10)
+
+    add_executable(PenStatusUiStateTest Common/tests/PenStatusUiStateTest.cpp)
+    target_include_directories(PenStatusUiStateTest PRIVATE Common/include)
+    add_test(NAME PenStatusUiStateTest COMMAND PenStatusUiStateTest)
+    set_tests_properties(PenStatusUiStateTest PROPERTIES LABELS "unit;Common;device-free" TIMEOUT 10)
+
+    add_executable(EnergyStarManagerTest Common/tests/EnergyStarManagerTest.cpp Tools/EGoTouchTray/EnergyStarManager.cpp)
+    target_include_directories(EnergyStarManagerTest PRIVATE Common/include Tools/EGoTouchTray)
+    target_compile_definitions(EnergyStarManagerTest PRIVATE OPENEGO_ENERGYSTAR_TESTING=1)
+    target_link_libraries(EnergyStarManagerTest PRIVATE advapi32 user32)
+    add_test(NAME EnergyStarManagerTest COMMAND EnergyStarManagerTest)
+    set_tests_properties(EnergyStarManagerTest PROPERTIES LABELS "integration;Common;windows;device-free" TIMEOUT 30)
+    add_executable(HeadphoneImageIdentityTest Common/tests/HeadphoneImageIdentityTest.cpp)
+    target_include_directories(HeadphoneImageIdentityTest PRIVATE Common/include)
+    add_test(NAME HeadphoneImageIdentityTest COMMAND HeadphoneImageIdentityTest)
+    set_tests_properties(HeadphoneImageIdentityTest PROPERTIES LABELS "unit;Common;device-free" TIMEOUT 10)
+    add_executable(DeviceArtworkIdentityCacheFormatTest Common/tests/DeviceArtworkIdentityCacheFormatTest.cpp)
+    target_include_directories(DeviceArtworkIdentityCacheFormatTest PRIVATE Common/include Tools/EGoTouchSettings)
+    add_test(NAME DeviceArtworkIdentityCacheFormatTest COMMAND DeviceArtworkIdentityCacheFormatTest)
+    set_tests_properties(DeviceArtworkIdentityCacheFormatTest PROPERTIES LABELS "unit;Common;device-free" TIMEOUT 10)
+    add_executable(AccessoryBitmapCacheTest Common/tests/AccessoryBitmapCacheTest.cpp)
+    target_include_directories(AccessoryBitmapCacheTest PRIVATE Tools/EGoTouchSettings)
+    add_test(NAME AccessoryBitmapCacheTest COMMAND AccessoryBitmapCacheTest)
+    set_tests_properties(AccessoryBitmapCacheTest PROPERTIES LABELS "unit;Common;device-free" TIMEOUT 10)
+    add_executable(HeadphoneClientFlowTest Common/tests/HeadphoneClientFlowTest.cpp Common/source/HuaweiHeadphonesProtocol.cpp)
+    target_include_directories(HeadphoneClientFlowTest PRIVATE Common/include)
+    target_link_libraries(HeadphoneClientFlowTest PRIVATE ws2_32 bthprops)
+    add_test(NAME HeadphoneClientFlowTest COMMAND HeadphoneClientFlowTest)
+    set_tests_properties(HeadphoneClientFlowTest PROPERTIES LABELS "unit;Common;device-free" TIMEOUT 10)
+    add_executable(DeviceArtworkIdentityCacheStoreTest Common/tests/DeviceArtworkIdentityCacheStoreTest.cpp Tools/EGoTouchSettings/DeviceArtworkIdentityCache.cpp)
+    target_include_directories(DeviceArtworkIdentityCacheStoreTest PRIVATE Common/include Tools/EGoTouchSettings)
+    target_link_libraries(DeviceArtworkIdentityCacheStoreTest PRIVATE shell32 ole32 uuid)
+    add_test(NAME DeviceArtworkIdentityCacheStoreTest COMMAND DeviceArtworkIdentityCacheStoreTest)
+    set_tests_properties(DeviceArtworkIdentityCacheStoreTest PROPERTIES LABELS "unit;Common;device-free" TIMEOUT 15)
+    add_executable(HuaweiHeadphonesProtocolTest Common/tests/HuaweiHeadphonesProtocolTest.cpp Common/source/HuaweiHeadphonesProtocol.cpp)
+    target_include_directories(HuaweiHeadphonesProtocolTest PRIVATE Common/include)
+    add_test(NAME HuaweiHeadphonesProtocolTest COMMAND HuaweiHeadphonesProtocolTest)
+    set_tests_properties(HuaweiHeadphonesProtocolTest PROPERTIES LABELS "unit;Common;device-free" TIMEOUT 10)
+    add_executable(InputSchedulingPolicyTest EGoTouchService/tests/unit/InputSchedulingPolicyTest.cpp)
+    target_include_directories(InputSchedulingPolicyTest PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/EGoTouchRev/EGoTouchService/Device")
+    add_test(NAME InputSchedulingPolicyTest COMMAND InputSchedulingPolicyTest)
+    set_tests_properties(InputSchedulingPolicyTest PROPERTIES LABELS "unit;service;device-free" TIMEOUT 10)
+    add_executable(TouchContactEventsTest EGoTouchService/tests/unit/TouchContactEventsTest.cpp)
+    target_include_directories(TouchContactEventsTest PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/EGoTouchRev/EGoTouchService/Solvers/TouchSolver/TsaCore")
+    add_test(NAME TouchContactEventsTest COMMAND TouchContactEventsTest)
+    set_tests_properties(TouchContactEventsTest PROPERTIES LABELS "unit;service;device-free" TIMEOUT 10)
+    add_executable(InputTimingStatsTest EGoTouchService/tests/unit/InputTimingStatsTest.cpp)
+    target_include_directories(InputTimingStatsTest PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/EGoTouchRev/EGoTouchService/Device")
+    add_test(NAME InputTimingStatsTest COMMAND InputTimingStatsTest)
+    set_tests_properties(InputTimingStatsTest PROPERTIES LABELS "unit;service;device-free" TIMEOUT 10)
+    add_executable(DragContinuityTest EGoTouchService/tests/unit/DragContinuityTest.cpp)
+    target_include_directories(DragContinuityTest PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/shared"
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/EGoTouchRev/Common/include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/EGoTouchRev/EGoTouchService/Solvers"
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/EGoTouchRev/EGoTouchService/Solvers/TouchSolver/TsaCore"
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/EGoTouchRev/EGoTouchService/Device/vhf")
+    target_compile_definitions(DragContinuityTest PRIVATE EGOTOUCH_DIAG=0)
+    add_test(NAME DragContinuityTest COMMAND DragContinuityTest)
+    set_tests_properties(DragContinuityTest PROPERTIES LABELS "unit;service;device-free" TIMEOUT 10)
+    add_executable(PenHoverPolicyTest EGoTouchService/tests/unit/PenHoverPolicyTest.cpp)
+    target_include_directories(PenHoverPolicyTest PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/shared")
+    add_test(NAME PenHoverPolicyTest COMMAND PenHoverPolicyTest)
+    set_tests_properties(PenHoverPolicyTest PROPERTIES LABELS "unit;service;device-free" TIMEOUT 10)
+    add_executable(EGoTouchDriverBusBringUpTest
+        EGoTouchService/tests/unit/EGoTouchDriverBusBringUpTest.cpp)
+    target_include_directories(EGoTouchDriverBusBringUpTest PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/EGoTouchRev/EGoTouchService/Device")
+    add_test(NAME EGoTouchDriverBusBringUpTest COMMAND EGoTouchDriverBusBringUpTest)
+    set_tests_properties(EGoTouchDriverBusBringUpTest PROPERTIES
+        LABELS "unit;service;device-free" TIMEOUT 10)
+    add_executable(EGoTouchPenWakeHandshakeTest
+        EGoTouchService/tests/unit/EGoTouchPenWakeHandshakeTest.cpp)
+    target_include_directories(EGoTouchPenWakeHandshakeTest PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/EGoTouchRev/EGoTouchService/Device")
+    add_test(NAME EGoTouchPenWakeHandshakeTest COMMAND EGoTouchPenWakeHandshakeTest)
+    set_tests_properties(EGoTouchPenWakeHandshakeTest PROPERTIES
+        LABELS "unit;service;device-free" TIMEOUT 10)
+    add_executable(EGoTouchDriverParentGuardTest
+        EGoTouchService/tests/unit/EGoTouchDriverParentGuardTest.cpp)
+    target_include_directories(EGoTouchDriverParentGuardTest PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/EGoTouchRev/EGoTouchService/include")
+    target_link_libraries(EGoTouchDriverParentGuardTest PRIVATE advapi32)
+    add_test(NAME EGoTouchDriverParentGuardTest COMMAND EGoTouchDriverParentGuardTest)
+    set_tests_properties(EGoTouchDriverParentGuardTest PROPERTIES
+        LABELS "unit;service;windows;device-free" TIMEOUT 10)
+endif()
 
 ego_copy_config_to_output(EGoTouchService)
 
@@ -389,7 +506,32 @@ if(WIN32 AND MSVC)
     set(EGO_SETTINGS_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}")
     set(EGO_SETTINGS_INTERMEDIATE
         "${CMAKE_CURRENT_BINARY_DIR}/EGoTouchSettings-int/${CMAKE_BUILD_TYPE}")
+    file(GLOB_RECURSE EGO_HEADPHONE_ASSETS CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/Tools/EGoTouchSettings/Assets/Headphones/*.png"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Tools/EGoTouchSettings/Assets/Headphones/*.json")
     set(EGO_SETTINGS_SOURCES
+        ${EGO_HEADPHONE_ASSETS}
+        Common/include/HeadphoneConnectionPolicy.h
+        Tools/EGoTouchSettings/AccessoryImageLoader.cpp
+        Tools/EGoTouchSettings/AccessoryImageLoader.h
+        Tools/EGoTouchSettings/AccessoryBitmapCrop.h
+        Tools/EGoTouchSettings/AccessoryBitmapCache.h
+        Tools/EGoTouchSettings/DeviceArtworkIdentityCache.h
+        Tools/EGoTouchSettings/DeviceArtworkIdentityCache.cpp
+        Tools/EGoTouchSettings/DeviceArtworkIdentityCacheFormat.h
+        Tools/EGoTouchSettings/DeviceArtworkIdentityCacheStore.h
+        Tools/EGoTouchSettings/HeadphoneNotifications.cpp
+        Tools/EGoTouchSettings/NativeInputTrace.cpp
+        Tools/EGoTouchSettings/NativeInputTrace.h
+        Tools/EGoTouchSettings/HeadphoneImageLoader.h
+        Tools/EGoTouchSettings/HeadphoneOptionIcons.h
+        Tools/EGoTouchSettings/HeadphoneImageLoader.cpp
+        Common/include/HeadphoneImageIdentity.h
+        Common/include/HuaweiHeadphonesProtocol.h
+        Common/source/HuaweiHeadphonesProtocol.cpp
+        Tools/EGoTouchSettings/HeadphoneClient.h
+        Tools/EGoTouchSettings/HeadphoneClient.cpp
+        Tools/EGoTouchSettings/HeadphonesPage.cpp
         Tools/EGoTouchSettings/App.xaml
         Tools/EGoTouchSettings/App.xaml.cpp
         Tools/EGoTouchSettings/App.xaml.h
@@ -415,6 +557,7 @@ if(WIN32 AND MSVC)
         Tools/EGoTouchSettings/Assets/OpenEGoHub.ico
         Common/include/AppIconResource.h
         Common/include/AppVersion.h
+        Common/include/PopupTimingTrace.h
         Common/include/EGoTouchTrayIpc.h
         Common/include/ManagedResource.h
         Common/include/PenButtonConfig.h
@@ -445,6 +588,11 @@ endif()
 
 add_executable(EGoTouchTray WIN32
     Tools/EGoTouchTray/EGoTouchTray.cpp
+    Tools/EGoTouchTray/HeadphoneConnectionMonitor.cpp
+    Tools/EGoTouchTray/HeadphoneAudioReconnect.cpp
+    Tools/EGoTouchTray/HeadphonePresenceWatcher.cpp
+    Tools/EGoTouchTray/KeyboardChargeGlow.cpp
+    Tools/EGoTouchTray/EnergyStarManager.cpp
     Tools/EGoTouchTray/Tray.rc
 )
 # rc.exe 没有 /showIncludes，CMake 因此不为 .rc 生成 depfile：改了 AppVersion.h,ninja
@@ -454,34 +602,41 @@ add_executable(EGoTouchTray WIN32
 set_source_files_properties(Tools/EGoTouchTray/Tray.rc PROPERTIES
     OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/Common/include/AppVersion.h")
 target_include_directories(EGoTouchTray PRIVATE "${COMMON_ROOT}/include")
+file(TO_CMAKE_PATH "$ENV{WindowsSdkDir}/Include/$ENV{WindowsSDKVersion}/cppwinrt"
+    _ego_cppwinrt_sdk_hint)
+find_path(EGO_CPPWINRT_INCLUDE_DIR winrt/base.h
+    HINTS "${_ego_cppwinrt_sdk_hint}" "${latest_sdk_dir}/cppwinrt"
+    REQUIRED)
+target_include_directories(EGoTouchTray SYSTEM PRIVATE "${EGO_CPPWINRT_INCLUDE_DIR}")
+unset(_ego_cppwinrt_sdk_hint)
 target_link_libraries(EGoTouchTray PRIVATE Common advapi32 comctl32 d2d1 dwrite dwmapi
-    shell32 shcore user32 gdi32 uiautomationcore uxtheme)
+    shell32 shcore user32 gdi32 uiautomationcore uxtheme bthprops ole32 cfgmgr32 uuid windowsapp dcomp d3d11 dxgi)
 set_target_properties(EGoTouchTray PROPERTIES OUTPUT_NAME OpenEGoHubTray)
 if(TARGET EGoTouchSettings)
     add_dependencies(EGoTouchTray EGoTouchSettings)
 endif()
 
-# 色温与护眼命令由用户会话里的托盘执行，GaokunDisplay 因而必须和托盘在同一目录；
-# qdcmlib 也必须紧挨 GaokunDisplay，不能误加载 System32 里的不兼容版本。安装脚本已有同样
-# 的布局，这里补齐直接从 build 目录运行的 Debug/Release 开发链路。
+# The tray runs GaokunDisplay in the user session. The public build does not
+# require a vendor DLL. Copy a locally supplied DLL when building from source.
 set(GAOKUN_DISPLAY_EXE
     "${GAOKUN_HAL_ROOT}/build/${GAOKUN_HAL_CONFIG}/GaokunDisplay.exe")
-set(GAOKUN_QDCM_DLL
-    "${GAOKUN_HAL_ROOT}/build/${GAOKUN_HAL_CONFIG}/qdcmlib.dll")
 set(EGO_DISPLAY_RUNTIME_EXE "${CMAKE_CURRENT_BINARY_DIR}/GaokunDisplay.exe")
-set(EGO_DISPLAY_RUNTIME_DLL "${CMAKE_CURRENT_BINARY_DIR}/qdcmlib.dll")
 add_custom_command(
-    OUTPUT "${EGO_DISPLAY_RUNTIME_EXE}" "${EGO_DISPLAY_RUNTIME_DLL}"
+    OUTPUT "${EGO_DISPLAY_RUNTIME_EXE}"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
         "${GAOKUN_DISPLAY_EXE}" "${EGO_DISPLAY_RUNTIME_EXE}"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-        "${GAOKUN_QDCM_DLL}" "${EGO_DISPLAY_RUNTIME_DLL}"
-    DEPENDS "${GAOKUN_DISPLAY_EXE}" "${GAOKUN_QDCM_DLL}"
+    DEPENDS "${GAOKUN_DISPLAY_EXE}"
     COMMENT "Copying Gaokun display runtime beside OpenEGoHubTray"
     VERBATIM
 )
-add_custom_target(EGoTouchDisplayRuntime ALL
-    DEPENDS "${EGO_DISPLAY_RUNTIME_EXE}" "${EGO_DISPLAY_RUNTIME_DLL}")
+add_custom_target(EGoTouchDisplayRuntime ALL DEPENDS "${EGO_DISPLAY_RUNTIME_EXE}")
+if(EXISTS "${GAOKUN_HAL_ROOT}/vendor/qdcmlib.dll")
+    add_custom_command(TARGET EGoTouchDisplayRuntime POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${GAOKUN_HAL_ROOT}/vendor/qdcmlib.dll" "${CMAKE_CURRENT_BINARY_DIR}/qdcmlib.dll"
+        VERBATIM
+    )
+endif()
 add_dependencies(EGoTouchTray EGoTouchDisplayRuntime)
 
 # 面向用户的可执行文件名随产品走，CMake target 名保持不变：target 名只出现在构建脚本、

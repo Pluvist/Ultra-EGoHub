@@ -1,0 +1,74 @@
+Source: https://github.com/awarson2233/EGoTouchRev
+Commit: 6365e327f2aea50024e8ba96d5cb810ca39e21ad
+Version: 1.5.0
+Imported: CMakeLists.txt, Common/, EGoTouchService/, LICENSE, README.md.
+Local integration: HubParentGuard.h and ServiceShell.cpp parent lifetime guard;
+isolated system-state event namespace; service name OpenEGoHubThpHost.
+Tools are disabled. Upstream active stylus support is experimental/disconnected;
+this integration does not claim to restore it.
+CMake adjustment: use /clang:-ffp-contract=off with clang-cl so the upstream no-FMA requirement is applied.
+0.5.4 integration fix: permit bounded initialization with a powered panel and zero
+burst register; acknowledge SCM startup only after a master frame and VHF readiness.
+
+0.5.5 policy: never restore OEM input, including parent crash and readiness failure.
+0.5.6 integration: read the SYSTEM supervisor's PenHoverChannel before runtime start
+and every 200 ms. Filter final VHF stylus bytes after eraser transforms: tip-up hover
+becomes an out-of-range neutral report; actual tip contact is preserved. Disabling
+an active hover flushes it immediately without interrupting an active stroke.
+0.5.7: preserve finger mapping without fresh master data; skip corrupt slave input;
+bound consecutive corrupt/zero frames before the both-invalid early return. Keep an
+encoded HID contact ledger for explicit ups and partial-write recovery, serialize
+flush with dispatch, correct eraser hover/absent states, and skip redundant neutral
+pen writes. No active motion/pressure coalescing or extra release debounce.
+
+0.5.8: revert redundant-neutral suppression after user-observed visual stutter.
+Restore per-valid-frame pen cadence, update touch state once on success, cache active
+contact count, and skip repeated ready checks after startup. Add aggregate active
+frame/read/solve/send timings; no raw input or application data is logged. Existing
+continuity and explicit-release fixes remain; no extra coordinate filtering/batching.
+
+0.5.9: replace process-wide REALTIME/HIGH with NORMAL and boost only the input
+worker one step; log actual scheduling. Normalize reported raw Down/Move/pending-lift
+events as continuing contact in Core::TouchAt; preserve internal Report semantics
+and initial-down debounce. Repeated tap and actual Windows scheduling tests added.
+
+0.5.10: halve small-finger edge-safe margins, retaining shape/ratio checks and
+large-object/palm handling. Replace whole-frame clearing on any lift in TsaOut with
+per-contact pruning. Add a real TsaCore-library regression target covering 100
+overlapping tap transitions through mapper/HID output and multi-finger continuity.
+
+0.5.12: bounded, default-off raw/filter/HID contact-state tracing (no coordinates)
+located a 50 ms Windows grip admission wait swallowing short taps. Reduce this to
+8 ms only for quiet, confirmed, small fingers with no grip/palm/exception markers.
+Preserve noise, initial debounce, explicit grip and large-contact paths. Extend the
+real-library regression test to check admission and all protection exceptions.
+
+0.5.13: user-requested removal of the remaining 8 ms grip admission delay for
+already-confirmed quiet small non-palm fingers. All prior guard conditions remain;
+initial debounce, noise/palm safeguards, release rules and scan cadence are unchanged.
+Real-core tests require immediate confirmed Down/Move admission and guard retention.
+
+0.5.14: after a visual-stutter regression report, restore the user-validated
+0.5.12 8 ms guarded finger admission threshold. This is a mitigation; internal
+timing did not establish causality. Skip redundant matrix/suffix decoding in
+production solver mode, retain diagnostics/parser-only decoding and per-frame
+touch/neutral-pen reports. Hardware visual validation remains required.
+
+0.5.15: equivalent-output stylus matrix optimization: reject unobservable results
+before expansion, clear only previously written ranges and use exact ARM64 integer
+vector copies for interior/clipped windows. Preserve legacy anchor boundaries.
+Hub headless Release omits unused GUI log copies; file logs and Debug retained.
+16,000 mixed frames matched the archived 0.5.14 metadata and all returned cells;
+new dense-oracle device-free test checks cached ranges. Input cadence, 8 ms finger
+admission, filtering, palm/noise guards and neutral pen reports remain unchanged.
+
+0.5.40: take a fresh power snapshot after probing the panel and use its epoch
+for chip initialization. The MCU event worker waits for active frame and HID
+readiness before the existing pen handshake. It gives each wake or transport
+reopen three attempts, checks deadlines on reads and timeouts, and only marks
+the handshake complete after the protocol parameters are written successfully.
+The user reported continuous pen drags becoming repeated taps after long sleep.
+
+0.5.41: defer an explicit MCU parameter request received before readiness.
+Once awake, respond to a valid request even if the screen-status reply arrived
+out of order or the host's active retry window already ended.

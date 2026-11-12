@@ -27,6 +27,11 @@
 #include "PenStatusChannel.h"
 #include "EGoTouchTrayIpc.h"
 #include "BrandMark.h"
+#include "HeadphoneConnectionMonitor.h"
+#include "KeyboardChargeGlow.h"
+#include "EnergyStarManager.h"
+#include "KeyboardAttachmentEdge.h"
+#include "PopupTimingTrace.h"
 
 #include <d2d1.h>
 #include <dwrite.h>
@@ -47,6 +52,7 @@
 #include <cstring>
 #include <cwchar>
 #include <cwctype>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -61,6 +67,13 @@
 #pragma comment(linker, "\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 
 namespace {
+
+HeadphoneConnectionMonitor g_headphoneMonitor;
+EnergyStarManager g_energyStar;
+bool g_energyStarDesired=false;
+KeyboardChargeGlow g_keyboardChargeGlow;
+KeyboardAttachment::Edge g_keyboardAttachmentEdge;
+constexpr UINT kHeadphoneConnectedMessage = WM_APP + 40;
 
 constexpr const wchar_t* kWindowClass = EGoTouchTrayIpc::kTrayWindowClass;
 constexpr wchar_t kMutexName[]   = L"Local\\OpenEGoHubTraySingleton";
@@ -110,6 +123,7 @@ constexpr UINT_PTR kTimerAnim   = 2;   // fade animation
 constexpr UINT_PTR kTimerDwell  = 3;   // visible hold
 constexpr UINT_PTR kTimerLease  = 4;   // provider lease heartbeat / safe exit
 constexpr UINT_PTR kTimerUpdateExit = 5;   // 安装开始，弹完提示再退出
+constexpr UINT_PTR kTimerWinUiNotification = 6; // 仅在等待通知宿主时运行
 
 constexpr UINT kPollIntervalMs = 400;
 constexpr UINT kAnimIntervalMs = 16;
@@ -120,6 +134,9 @@ constexpr UINT kLeaseIntervalMs = 1000;
 // 安装开始到托盘退出之间留的那点时间。见 BeginUpdateInstallExit：图标一删气泡就跟着消失，
 // 不留这一段，那条「正在安装」等于没弹过。
 constexpr UINT kUpdateExitDelayMs = 2000;
+constexpr UINT kWinUiNotificationPollMs = 25;
+constexpr ULONGLONG kWinUiNotificationWaitMs = 5000;
+constexpr size_t kMaxPendingWinUiNotifications = 16;
 constexpr ULONGLONG kSafeExitTimeoutMs = 20000;
 constexpr ULONGLONG kReaderReconnectMs = 5000;
 // 键盘开关等待回读确认的上限。服务下发命令后由宿主读回 MCU 再经快照回来，实测一秒以内；
@@ -139,6 +156,20 @@ constexpr UINT kTrayMenuPenButtonSpan = 256;   // 枚举底层类型是 uint8_t
 
 enum class Phase { Hidden, FadeIn, Dwell, FadeOut };
 
+struct PendingWinUiNotification {
+    EGoTouchTrayIpc::Notification notification;
+    LPARAM payload;
+};
+
+struct NotificationSettingsLaunch {
+    std::wstring executablePath;
+    std::atomic<bool> cancelled{false};
+    std::atomic<bool> completed{false};
+    // 由 completed 的 release/acquire 发布，只在线程池工作结束后读取。
+    HANDLE process = nullptr;
+    ~NotificationSettingsLaunch() { if (process) CloseHandle(process); }
+};
+
 struct App {
     HWND hwnd = nullptr;
     HINSTANCE instance = nullptr;
@@ -153,6 +184,7 @@ struct App {
     PenStatus::State state{};
     bool hasState = false;
     ULONGLONG lastReaderReconnectTick = 0;
+    bool driverFailureNotified = false;
     bool prevCharging = false;
     bool prevChargingValid = false;
     uint32_t prevNotificationSequence = 0;
@@ -190,6 +222,12 @@ struct App {
     bool autoUpdateCheck = true;
     bool exitPending = false;
     ULONGLONG exitDeadlineTick = 0;
+
+    // 由托盘消息线程独占；不在首次启动 WinUI 时阻塞状态轮询或设备事件。
+    std::vector<PendingWinUiNotification> pendingWinUiNotifications;
+    ULONGLONG winUiNotificationDeadline = 0;
+    // 超时后保留启动状态，下一条通知仍等同一慢启动；从不等待工作线程或进程退出。
+    std::shared_ptr<NotificationSettingsLaunch> notificationSettingsLaunch;
 
     Phase phase = Phase::Hidden;
     DWORD phaseStartTick = 0;
@@ -1339,6 +1377,7 @@ void GestureWatcherThread() {
 // ── channel ──────────────────────────────────────────────────────────────────
 
 void ShowWinUiNotification(EGoTouchTrayIpc::Notification notification, LPARAM payload = 0);
+void CancelPendingWinUiNotifications(bool releaseLaunchProcess = false);
 // 失败提示走托盘自己的气泡，不经 WinUI 那条通知链：那条链只有设置窗在跑时才有宿主，而
 // 「设置没生效」正是用户最可能只在托盘菜单里操作的一刻。
 // 提示的图标默认是警告：这个函数原先只报「设置没生效」。有新版本是一条中性消息，
@@ -1370,6 +1409,13 @@ void ReportKbdDetachFailure(bool unsupported) {
 
 void PollChannel() {
     const ULONGLONG now = GetTickCount64();
+    const auto energyStatus=g_energyStar.GetStatus();
+    const auto energyFailed=static_cast<uint32_t>(EGoTouchTrayIpc::EnergyStarStatus::Failed);
+    const auto energyTransitioning=static_cast<uint32_t>(EGoTouchTrayIpc::EnergyStarStatus::Transitioning);
+    if(g_energyStarDesired&&(energyStatus&energyFailed)&&!(energyStatus&energyTransitioning)){
+        g_energyStarDesired=false;
+        (void)WriteUserSetting(L"EnergyStarEnabled",0);
+    }
     if (g_app.reader.IsOpen() &&
         now - g_app.lastReaderReconnectTick >= kReaderReconnectMs) {
         g_app.reader.Close();
@@ -1378,6 +1424,7 @@ void PollChannel() {
         // The service may start after us, or restart; keep retrying quietly.
         if (!g_app.reader.Open()) {
             g_app.hasState = false;
+            g_keyboardAttachmentEdge.Reset();
             return;
         }
         g_app.lastReaderReconnectTick = now;
@@ -1386,6 +1433,7 @@ void PollChannel() {
     PenStatus::State fresh{};
     if (!g_app.reader.Read(fresh)) {
         g_app.reader.Close();
+        g_keyboardAttachmentEdge.Reset();
         return;
     }
 
@@ -1394,6 +1442,11 @@ void PollChannel() {
     const uint32_t previousNotification = g_app.prevNotificationSequence;
     const bool hadNotificationBaseline = g_app.prevNotificationValid;
 
+    const bool driverFailed=fresh.hasProviderError && fresh.providerError==8;
+    if(driverFailed && !g_app.driverFailureNotified) {
+        ShowTrayBalloon(L"触控驱动启动失败",L"驱动已重试 5 次仍未启动。原厂触控保持禁用，请重新启动驱动服务后重试。",NIIF_ERROR,true);
+    }
+    g_app.driverFailureNotified=driverFailed;
     g_app.state = fresh;
     g_app.hasState = true;
 
@@ -1468,7 +1521,7 @@ void PollChannel() {
                           unsigned(fresh.updatePatch));
             // 不归「设备提示弹窗」那个开关管：那一条说的是配件接入。
             // 气泡是入口不是告示：点下去打开控制面板，升级的决定在那边的对话框里做。
-            ShowTrayBalloon(L"OpenEGo Hub", text, NIIF_INFO, true);
+            ShowTrayBalloon(L"Ultra-EGoHub", text, NIIF_INFO, true);
         }
     } else if (fresh.updateState == PenStatus::UpdateState::Idle) {
         // 装完或跳过之后服务回到 Idle。记录作废，下一个版本照常提示；被跳过的那一版服务
@@ -1501,6 +1554,15 @@ void PollChannel() {
             ReportKbdDetachFailure(false);
         }
     }
+
+    // Physical attachment is independent of charging and wireless/link presence.
+    // Missing data cannot manufacture a detached state during a link wake-up.
+    std::optional<bool> keyboardAttached;
+    if(fresh.hasKbdDetached)keyboardAttached=!fresh.kbdDetached;
+    const bool keyboardHealthy=!fresh.hasHostHealth||fresh.kbdHostHealthy;
+    const bool showAttachmentGlow=g_app.deviceNotifications&&!g_app.updateExitPending&&!g_app.exitPending;
+    if(g_keyboardAttachmentEdge.Observe(keyboardHealthy,keyboardAttached,now,showAttachmentGlow))
+        g_keyboardChargeGlow.Play();
 
     g_app.prevCharging = nowCharging;
     g_app.prevChargingValid = true;
@@ -1679,7 +1741,7 @@ void AddTrayIcon() {
     g_app.trayIcon.uID = 1;
     g_app.trayIcon.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     g_app.trayIcon.uCallbackMessage = WM_TRAYICON;
-    wcscpy_s(g_app.trayIcon.szTip, L"OpenEGo Hub");
+    wcscpy_s(g_app.trayIcon.szTip, L"Ultra-EGoHub");
 
     // 此时 trayIconAdded 仍为 false，只填 hIcon，不会去发 NIM_MODIFY。
     RefreshTrayIconImage(ReadTaskbarDarkMode());
@@ -1731,7 +1793,7 @@ void ReportVersionChange() {
     if (!previous.empty()) {
         // 与「有新版本」那条一样点了能进设置：升级完多半就是想看看新版本里有什么。
         const std::wstring text = L"已更新到 " + current + L"。";
-        ShowTrayBalloon(L"OpenEGo Hub", text.c_str(), NIIF_INFO, true);
+        ShowTrayBalloon(L"Ultra-EGoHub", text.c_str(), NIIF_INFO, true);
     }
     (void)WriteUserStringSetting(kLastVersionValueName, current);
 }
@@ -1789,6 +1851,7 @@ bool SubmitUpdateCommand(PenControl::UpdateCommand command) {
 void BeginUpdateInstallExit(uint8_t major, uint8_t minor, uint8_t patch) {
     if (g_app.updateExitPending) return;
     g_app.updateExitPending = true;
+    CancelPendingWinUiNotifications(true);
     NotifySettingsLifecycle(EGoTouchTrayIpc::SettingsLifecycle::InstallStarted);
 
     // 安装这几秒里没有任何本程序的界面活着：设置窗已经关掉，托盘马上也要退，而 msiexec 由
@@ -1801,7 +1864,7 @@ void BeginUpdateInstallExit(uint8_t major, uint8_t minor, uint8_t patch) {
                   L"正在安装 %u.%u.%u。",
                   unsigned(major), unsigned(minor), unsigned(patch));
     // 这一条不给入口：安装期间打开设置窗只会再锁住一个要被覆盖的 exe。
-    ShowTrayBalloon(L"OpenEGo Hub", text, NIIF_INFO);
+    ShowTrayBalloon(L"Ultra-EGoHub", text, NIIF_INFO);
 
     // 租约立刻放掉，不等退出：交还触控与本进程还活着多久无关，早一秒下发，服务就早一秒
     // 开始切回 Huawei。
@@ -1824,6 +1887,17 @@ bool SubmitPenButtonModeCommand(uint8_t mode) {
     std::lock_guard<std::mutex> submitLock(g_controlSubmitMutex);
     g_app.control.Close();
     if (!g_app.control.Open() || !g_app.control.SubmitPenButtonMode(mode)) {
+        g_app.control.Close();
+        return false;
+    }
+    return true;
+}
+
+bool SubmitPenHoverCommand(bool enabled) {
+    std::lock_guard<std::mutex> submitLock(g_controlSubmitMutex);
+    // Reopen under the same lock used by the lease heartbeat after a service restart.
+    g_app.control.Close();
+    if (!g_app.control.Open() || !g_app.control.SubmitPenHoverEnabled(enabled)) {
         g_app.control.Close();
         return false;
     }
@@ -2235,7 +2309,7 @@ HWND FindSettingsBridge() {
 }
 
 bool LaunchSettingsProcess(bool background, bool reportError) {
-    if (g_app.updateExitPending) return false;
+    if (g_app.updateExitPending || g_app.exitPending) return false;
     const std::wstring settingsPath = SettingsExecutablePath();
     if (settingsPath.empty()) return false;
 
@@ -2247,8 +2321,8 @@ bool LaunchSettingsProcess(bool background, bool reportError) {
                         CREATE_UNICODE_ENVIRONMENT, nullptr, nullptr,
                         &startup, &process)) {
         if (reportError) {
-            MessageBoxW(nullptr, L"无法启动 OpenEGo Hub 控制面板。请确认安装文件完整。",
-                        L"OpenEGo Hub", MB_OK | MB_ICONERROR);
+            MessageBoxW(nullptr, L"无法启动 Ultra-EGoHub 控制面板。请确认安装文件完整。",
+                        L"Ultra-EGoHub", MB_OK | MB_ICONERROR);
         }
         return false;
     }
@@ -2270,12 +2344,118 @@ void ShowSettingsPanel() {
     (void)LaunchSettingsProcess(false, true);
 }
 
+bool IsWinUiNotificationEnabled(EGoTouchTrayIpc::Notification notification) {
+    return notification == EGoTouchTrayIpc::Notification::PenToolChanged ||
+           g_app.deviceNotifications;
+}
+
+void ReleaseNotificationSettingsProcess() {
+    if (!g_app.notificationSettingsLaunch) return;
+    g_app.notificationSettingsLaunch->cancelled.store(true, std::memory_order_release);
+    g_app.notificationSettingsLaunch.reset();
+}
+
+DWORD CALLBACK LaunchNotificationSettingsProcess(void* context) noexcept {
+    PopupTimingTrace::Record("tray.launch");
+    // 只访问独立 job；托盘退出不 join，工作完成后最后一个引用负责关闭进程句柄。
+    std::unique_ptr<std::shared_ptr<NotificationSettingsLaunch>> argument(
+        static_cast<std::shared_ptr<NotificationSettingsLaunch>*>(context));
+    const auto launch = std::move(*argument);
+    argument.reset();
+    try {
+        if (!launch->cancelled.load(std::memory_order_acquire)) {
+            STARTUPINFOW startup{sizeof(startup)};
+            PROCESS_INFORMATION process{};
+            std::wstring commandLine = L"\"" + launch->executablePath + L"\" --background";
+            if (!launch->cancelled.load(std::memory_order_acquire) &&
+                CreateProcessW(launch->executablePath.c_str(), commandLine.data(),
+                               nullptr, nullptr, FALSE, CREATE_UNICODE_ENVIRONMENT,
+                               nullptr, nullptr, &startup, &process)) {
+                CloseHandle(process.hThread);
+                launch->process = process.hProcess;
+            }
+            PopupTimingTrace::Record("tray.create_done",launch->process?1:0);
+        }
+    } catch (...) {
+        // 通知启动失败不打断托盘，timer 会清理本次待投递通知。
+    }
+    launch->completed.store(true, std::memory_order_release);
+    return 0;
+}
+
+bool StartNotificationSettingsProcessAsync() {
+    if (g_app.updateExitPending || g_app.exitPending) return false;
+    auto launch = std::make_shared<NotificationSettingsLaunch>();
+    launch->executablePath = SettingsExecutablePath();
+    if (launch->executablePath.empty()) return false;
+    auto argument = std::make_unique<std::shared_ptr<NotificationSettingsLaunch>>(launch);
+    PopupTimingTrace::Record("tray.enqueue_launch");
+    if (!QueueUserWorkItem(LaunchNotificationSettingsProcess, argument.get(), WT_EXECUTEDEFAULT)) {
+        return false;
+    }
+    argument.release();
+    g_app.notificationSettingsLaunch = std::move(launch);
+    return true;
+}
+
+bool IsNotificationSettingsLaunchActive() {
+    const auto& launch = g_app.notificationSettingsLaunch;
+    if (!launch) return false;
+    if (!launch->completed.load(std::memory_order_acquire)) return true;
+    return launch->process && WaitForSingleObject(launch->process, 0) == WAIT_TIMEOUT;
+}
+
+void CancelPendingWinUiNotifications(bool releaseLaunchProcess) {
+    if (g_app.hwnd) KillTimer(g_app.hwnd, kTimerWinUiNotification);
+    g_app.pendingWinUiNotifications.clear();
+    g_app.winUiNotificationDeadline = 0;
+    if (releaseLaunchProcess) ReleaseNotificationSettingsProcess();
+}
+
+void DispatchPendingWinUiNotifications() {
+    if (!g_app.hwnd || g_app.updateExitPending || g_app.exitPending) {
+        CancelPendingWinUiNotifications(true);
+        return;
+    }
+    auto& pending = g_app.pendingWinUiNotifications;
+    pending.erase(std::remove_if(pending.begin(), pending.end(), [](const auto& item) {
+        return !IsWinUiNotificationEnabled(item.notification);
+    }), pending.end());
+    if (pending.empty()) {
+        CancelPendingWinUiNotifications();
+        return;
+    }
+    const HWND bridge = FindSettingsBridge();
+    if (!bridge) {
+        if (GetTickCount64() >= g_app.winUiNotificationDeadline) {
+            CancelPendingWinUiNotifications();
+            return;
+        }
+        const auto& launch = g_app.notificationSettingsLaunch;
+        if (launch && launch->completed.load(std::memory_order_acquire) && !launch->process) {
+            CancelPendingWinUiNotifications(true);
+        }
+        return;
+    }
+    PopupTimingTrace::Record("tray.bridge_found");
+    ReleaseNotificationSettingsProcess();
+    while (!pending.empty()) {
+        const auto& item = pending.front();
+        // 再检查一次：用户可能在宿主启动期间关掉设备接入提醒。
+        if (IsWinUiNotificationEnabled(item.notification) &&
+            !PostMessageW(bridge, EGoTouchTrayIpc::kNotificationMessage,
+                          static_cast<WPARAM>(item.notification), item.payload)) {
+            // 桥可能刚被关闭；保留未投递的项，交给下一次 timer，而不重复启动。
+            return;
+        }
+        pending.erase(pending.begin());
+    }
+    CancelPendingWinUiNotifications();
+}
+
 void ShowWinUiNotification(EGoTouchTrayIpc::Notification notification, LPARAM payload) {
     // 工具切换不归「设备接入提醒」管：那个开关说的是配件接入，而这一条是用户刚按下侧键的
     // 反馈，关掉前者的人要的是少一条吸附提示，不是切了橡皮擦却没有回应。
-    const bool deviceNotification =
-        notification != EGoTouchTrayIpc::Notification::PenToolChanged;
-
     // 关掉之后在这里就返回，不去找、更不去拉起设置进程：弹窗的宿主是 WinUI 那个进程，
     // 一次都不弹却把它拉起来，等于关了开关反而多跑一个进程。
     //
@@ -2284,56 +2464,56 @@ void ShowWinUiNotification(EGoTouchTrayIpc::Notification notification, LPARAM pa
     // 托盘看到序号变化就弹。**服务凭什么判定「未正确吸附」尚未取证**——是 MCU 上报的某个
     // 状态位，还是我们自己按吸附/充电状态推的，要从 PenStatus 的生产侧往回查。
     // 查清之前不把它单列成一个开关：给不出「什么时候会弹」，这个开关就没法解释。
-    if (deviceNotification && !g_app.deviceNotifications) return;
+    if (!g_app.hwnd || g_app.updateExitPending || g_app.exitPending ||
+        !IsWinUiNotificationEnabled(notification)) return;
 
-    HWND bridge = FindSettingsBridge();
-    if (!bridge) {
-        if (!LaunchSettingsProcess(true, false)) return;
-        // WinUI bootstrap and XAML construction happen in the new process. This runs only
-        // on the first notification of a session; subsequent notifications reuse the bridge.
-        for (int attempt = 0; attempt < 80 && !bridge; ++attempt) {
-            Sleep(25);
-            bridge = FindSettingsBridge();
+    auto& pending = g_app.pendingWinUiNotifications;
+    if (!pending.empty() && GetTickCount64() >= g_app.winUiNotificationDeadline) {
+        CancelPendingWinUiNotifications();
+    }
+    if (pending.empty()) {
+        if (const HWND bridge = FindSettingsBridge()) {
+            ReleaseNotificationSettingsProcess();
+            if (PostMessageW(bridge, EGoTouchTrayIpc::kNotificationMessage,
+                             static_cast<WPARAM>(notification), payload)) return;
         }
     }
-    if (bridge) {
-        PostMessageW(bridge, EGoTouchTrayIpc::kNotificationMessage,
-                     static_cast<WPARAM>(notification), payload);
+    // 只合并相邻的精确重复。橡皮擦 A→B→A 等有序变化不能被跨项合并。
+    if (!pending.empty() && pending.back().notification == notification &&
+        pending.back().payload == payload) return;
+    // 事件风暴时保留已经排队的顺序，不让待投递通知无界增长。
+    if (pending.size() >= kMaxPendingWinUiNotifications) return;
+    const bool firstPending = pending.empty();
+    pending.push_back({notification, payload});
+    if (firstPending) {
+        g_app.winUiNotificationDeadline = GetTickCount64() + kWinUiNotificationWaitMs;
+        if (!SetTimer(g_app.hwnd, kTimerWinUiNotification,
+                      kWinUiNotificationPollMs, nullptr)) {
+            CancelPendingWinUiNotifications();
+            return;
+        }
+        if (!FindSettingsBridge()) {
+            if (!IsNotificationSettingsLaunchActive()) {
+                ReleaseNotificationSettingsProcess();
+            }
+            if (!g_app.notificationSettingsLaunch && !StartNotificationSettingsProcessAsync()) {
+                CancelPendingWinUiNotifications();
+                return;
+            }
+        }
     }
+    DispatchPendingWinUiNotifications();
 }
 
 void RequestSafeExit() {
-    if (g_app.exitPending) return;
-    g_app.providerDesired = false;
     g_app.exitPending = true;
-    g_app.exitDeadlineTick = GetTickCount64() + kSafeExitTimeoutMs;
-    (void)SubmitProviderLease(PenControl::ProviderLeaseCommand::Release);
+    CancelPendingWinUiNotifications(true);
+    NotifySettingsLifecycle(EGoTouchTrayIpc::SettingsLifecycle::SafeExitCompleted);
+    DestroyWindow(g_app.hwnd); // The system service continues owning input.
 }
 
 void MaintainProviderLease() {
-    if (g_app.exitPending) {
-        (void)SubmitProviderLease(PenControl::ProviderLeaseCommand::Release);
-        PollChannel();
-        if (g_app.hasState && g_app.state.hasTouchProvider &&
-            g_app.state.touchProvider == PenStatus::TouchProviderState::Huawei) {
-            NotifySettingsLifecycle(EGoTouchTrayIpc::SettingsLifecycle::SafeExitCompleted);
-            DestroyWindow(g_app.hwnd);
-            return;
-        }
-        if (GetTickCount64() >= g_app.exitDeadlineTick) {
-            g_app.exitPending = false;
-            NotifySettingsLifecycle(EGoTouchTrayIpc::SettingsLifecycle::SafeExitFailed);
-            MessageBoxW(nullptr,
-                        L"未能确认 HuaweiTHP 已恢复，OpenEGo Hub 将继续留在托盘，避免在无触控状态下退出。",
-                        L"OpenEGo Hub", MB_OK | MB_ICONERROR);
-        }
-        return;
-    }
-
-    (void)SubmitProviderLease(
-        g_app.providerDesired
-            ? PenControl::ProviderLeaseCommand::AcquireOrRenew
-            : PenControl::ProviderLeaseCommand::Release);
+    (void)SubmitProviderLease(PenControl::ProviderLeaseCommand::AcquireOrRenew);
 }
 
 void AppendPenButtonItem(HMENU menu, PenButtonMode mode, const wchar_t* label, bool enabled) {
@@ -2367,8 +2547,8 @@ void ShowTrayMenu() {
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     // 这一项控制的是托盘租约，也就是触控由本程序接管还是交还原厂。名字里原先带着
     // EGoTouchRev，那是自研驱动时期的叫法，现在走的是原厂算法链的 ARM64EC 宿主。
-    AppendMenuW(menu, MF_STRING | (g_app.providerDesired ? MF_CHECKED : 0),
-                kTrayMenuProvider, L"接管触控与手写笔");
+    AppendMenuW(menu, MF_STRING | MF_GRAYED | MF_CHECKED,
+                kTrayMenuProvider, L"原厂触控已禁用");
     // 护眼是新做的几项里最常用的一个，值得一个不用开面板的入口。状态读注册表——那是托盘
     // 自己每次改完写下的，与 GaokunDisplay 的持久化状态同源。
     AppendMenuW(menu, MF_STRING | (ReadUserSetting(L"EyeComfort", 0) ? MF_CHECKED : 0),
@@ -2420,6 +2600,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             // 「正在安装」那条气泡已经露过面，可以让出 exe 了。
             KillTimer(hwnd, kTimerUpdateExit);
             DestroyWindow(hwnd);
+        } else if (wParam == kTimerWinUiNotification) {
+            DispatchPendingWinUiNotifications();
         } else if (wParam == kTimerAnim) {
             const DWORD elapsed = GetTickCount() - g_app.phaseStartTick;
             if (g_app.phase == Phase::FadeIn) {
@@ -2507,6 +2689,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     : PenControl::ProviderLeaseCommand::Release);
             return 1;
 
+        case EGoTouchTrayIpc::Command::SetPenHoverEnabled:
+            if (lParam != 0 && lParam != 1) return 0;
+            return SubmitPenHoverCommand(lParam != 0) ? 1 : 0;
         case EGoTouchTrayIpc::Command::SetPenButtonMode: {
             const auto mode = PenButtonModeFromNumeric(static_cast<int32_t>(lParam));
             if (!mode || (*mode != PenButtonMode::WindowsInk &&
@@ -2615,6 +2800,31 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             const bool requested = lParam != 0;
             if (!WriteUserSetting(L"DeviceNotifications", requested ? 1u : 0u)) return 0;
             g_app.deviceNotifications = requested;
+            if (!requested) DispatchPendingWinUiNotifications();
+            return 1;
+        }
+
+        case EGoTouchTrayIpc::Command::SetHeadphoneFastReconnect: {
+            const bool enabled = lParam != 0;
+            if (!WriteUserSetting(L"HeadphoneFastReconnect", enabled ? 1u : 0u)) return 0;
+            g_headphoneMonitor.SetFastReconnect(enabled);
+            return 1;
+        }
+        case EGoTouchTrayIpc::Command::ReconnectHeadphone:
+            return g_headphoneMonitor.RequestReconnect(static_cast<uint64_t>(lParam)) ? 1 : 0;
+
+        case EGoTouchTrayIpc::Command::QueryEnergyStar:
+            return static_cast<LRESULT>(g_energyStar.GetStatus());
+        case EGoTouchTrayIpc::Command::SetEnergyStar: {
+            if((lParam!=0&&lParam!=1)||g_app.exitPending||g_app.updateExitPending)return 0;
+            const bool enabled=lParam!=0;
+            const bool previous=g_energyStarDesired;
+            if(!WriteUserSetting(L"EnergyStarEnabled",enabled?1u:0u))return 0;
+            if(!g_energyStar.SetEnabled(enabled)){
+                (void)WriteUserSetting(L"EnergyStarEnabled",previous?1u:0u);
+                return 0;
+            }
+            g_energyStarDesired=enabled;
             return 1;
         }
 
@@ -2723,7 +2933,18 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         return 0;
     }
 
+    case WM_DEVICECHANGE:
+        if(g_headphoneMonitor.HandleDeviceChange(wParam,lParam))return TRUE;
+        break;
+    case kHeadphoneConnectedMessage:
+        PopupTimingTrace::Record("tray.headphone_event");
+        if(g_app.deviceNotifications)ShowWinUiNotification(EGoTouchTrayIpc::Notification::HeadphoneConnected,lParam);
+        return 0;
     case WM_DESTROY:
+        g_keyboardChargeGlow.Stop();
+        g_energyStar.Stop();
+        CancelPendingWinUiNotifications(true);
+        g_headphoneMonitor.Stop();
         ReleaseTrayIcon();
         // 自然色彩的守护进程是托盘拉起的，托盘走了它没人管——留着会继续按最后一次读到的
         // 环境光写 PCC，而界面已经不在了，用户无从关掉它。
@@ -2735,6 +2956,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
     case WM_ENDSESSION:
         if (wParam) {
+            g_app.exitPending = true;
+            CancelPendingWinUiNotifications(true);
             // 这里不能等 UI 消息循环完成切换；先显式释放，来不及处理时 5 秒租约仍是兜底。
             g_app.providerDesired = false;
             (void)SubmitProviderLease(PenControl::ProviderLeaseCommand::Release);
@@ -2843,7 +3066,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
     HANDLE singleton = CreateMutexW(nullptr, TRUE, kMutexName);
     if (singleton && GetLastError() == ERROR_ALREADY_EXISTS) {
         // 已经有一个托盘在跑。安装后开始菜单里的入口指向的就是本程序，用户点它是想打开
-        // OpenEGo Hub，而不是希望什么都不发生，所以把请求转交给在跑的那个实例去开设置窗。
+        // Ultra-EGoHub，而不是希望什么都不发生，所以把请求转交给在跑的那个实例去开设置窗。
         if (const HWND existing = FindWindowW(EGoTouchTrayIpc::kTrayWindowClass, nullptr)) {
             PostMessageW(existing, EGoTouchTrayIpc::kActivateMessage, 0, 0);
         }
@@ -2862,7 +3085,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
     LoadUserSettings();
     INITCOMMONCONTROLSEX commonControls{sizeof(commonControls), ICC_STANDARD_CLASSES};
     const bool commonControlsReady = InitCommonControlsEx(&commonControls) != FALSE;
-    // 只要用户主动或由登录启动项拉起托盘，本次会话就请求 OpenEGo Hub 接管；主开关可在
+    // 只要用户主动或由登录启动项拉起托盘，本次会话就请求 Ultra-EGoHub 接管；主开关可在
     // 不退出面板的情况下交还 Huawei。登录启动设置只决定下次是否自动拉起，不改变当前会话。
     g_app.providerDesired = true;
 
@@ -2890,6 +3113,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
 
     if (ready) {
         AddTrayIcon();
+        g_keyboardChargeGlow.Start(g_app.hwnd);
+        g_energyStarDesired=ReadUserSetting(L"EnergyStarEnabled",0)!=0;
+        if(g_energyStarDesired&&!g_energyStar.SetEnabled(true)){
+            g_energyStarDesired=false;
+            (void)WriteUserSetting(L"EnergyStarEnabled",0);
+        }
+        g_headphoneMonitor.Start(g_app.hwnd,kHeadphoneConnectedMessage);
+        g_headphoneMonitor.SetFastReconnect(ReadUserSetting(L"HeadphoneFastReconnect", 1) != 0);
         // 紧跟在图标加进托盘之后：气泡要有宿主图标才显示得出来。
         ReportVersionChange();
         g_app.reader.Open();      // may fail if the service is not up yet; poll retries

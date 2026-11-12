@@ -1,22 +1,16 @@
-#include "GaokunThp.h"
+#include "EGoTouchDriver.h"
 
 #include <windows.h>
 
 #include <string>
 
-namespace Gaokun::Thp {
+namespace EGoTouch::Driver {
 
 namespace {
 
-// 宿主服务的名字。固定值，不按构建区分：同一台设备同一时刻只能有一个触控提供方，Debug 与
-// Release 的服务本来就互斥，所以两者共用这一条注册，每次 Start 时把 ImagePath 对齐到当前
-// 这份宿主即可。
-//
-// 这个名字与 THP_Service.dll 内部硬编码的 HuaweiThpService 无关，也不必与之相同：
-// RegisterServiceCtrlHandlerExW 对 SERVICE_WIN32_OWN_PROCESS 忽略服务名。占用原厂的名字
-// 反而会挡住「随时让路给原厂」这条退路。
+// Keep the legacy SCM name for upgrades. The executable is now EGoTouchRev.
 constexpr const wchar_t *kHostServiceName = L"OpenEGoHubThpHost";
-constexpr const wchar_t *kHostServiceDisplayName = L"OpenEGo Hub 触控宿主";
+constexpr const wchar_t *kHostServiceDisplayName = L"OpenEGo Hub EGoTouchRev Driver";
 
 constexpr DWORD kPollIntervalMs = 100;
 
@@ -109,13 +103,12 @@ StartResult HostController::Start(const std::wstring &hostExePath,
         if (!service) return StartResult::LaunchFailed;
     } else {
         // 换构建目录或改日志级别都会让 ImagePath 过时，每次对齐而不是只在创建时写一次。
-        (void)ChangeServiceConfigW(service.get(), SERVICE_NO_CHANGE, SERVICE_NO_CHANGE,
+        if (!ChangeServiceConfigW(service.get(), SERVICE_NO_CHANGE, SERVICE_DEMAND_START,
                                    SERVICE_NO_CHANGE, imagePath.c_str(), nullptr, nullptr,
-                                   nullptr, nullptr, nullptr, nullptr);
+                                   nullptr, nullptr, nullptr, nullptr)) return StartResult::LaunchFailed;
     }
 
-    // 传自己的 pid：控制方崩溃时宿主据此自行走完 ThpFuncStop 并把原厂服务请回来。服务之间
-    // 没有父子关系，SCM 不会因为控制方消失而停掉宿主，这条线是唯一的兜底。
+    // The driver watches this process and restores OEM input after an orphaned shutdown.
     const std::wstring self = std::to_wstring(GetCurrentProcessId());
     const wchar_t *args[] = {L"--parent", self.c_str()};
 
@@ -124,7 +117,7 @@ StartResult HostController::Start(const std::wstring &hostExePath,
         return StartResult::AlreadyRunning;
     }
 
-    const DWORD state = WaitForState(service.get(), SERVICE_START_PENDING, 15000);
+    const DWORD state = WaitForState(service.get(), SERVICE_START_PENDING, 20000);
     if (state != SERVICE_RUNNING) {
         // 起不来的常见原因是设备仍被原厂服务持有，或原厂目录定位失败。两种情况下宿主都会
         // 在 StartThp 里失败并报告 STOPPED，与「已接管」区分开，调用方才不会误报成功。
@@ -132,6 +125,9 @@ StartResult HostController::Start(const std::wstring &hostExePath,
         if (QueryStatus(service.get(), status)) {
             m_lastExitCode = static_cast<int>(status.dwWin32ExitCode);
         }
+        const int startupError = m_lastExitCode;
+        (void)Stop(std::chrono::seconds(15));
+        m_lastExitCode = startupError;
         return StartResult::ExitedImmediately;
     }
 
@@ -163,7 +159,10 @@ bool HostController::Stop(std::chrono::milliseconds timeout) noexcept {
         status.dwCurrentState != SERVICE_STOP_PENDING &&
         !ControlService(service.get(), SERVICE_CONTROL_STOP, &legacy) &&
         GetLastError() != ERROR_SERVICE_NOT_ACTIVE) {
-        return false;
+        // START_PENDING rejects STOP while the driver checks input readiness.
+        // Wait for its bounded startup failure, or use the timeout kill below.
+        if (status.dwCurrentState != SERVICE_START_PENDING ||
+            GetLastError() != ERROR_SERVICE_CANNOT_ACCEPT_CTRL) return false;
     }
 
     const auto remaining = [&]() -> DWORD {
@@ -224,9 +223,9 @@ bool HostController::IsRunning() const noexcept {
         m_process = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION |
                                    PROCESS_TERMINATE, FALSE, status.dwProcessId);
     }
-    return status.dwCurrentState != SERVICE_STOPPED;
+    return status.dwCurrentState == SERVICE_RUNNING;
 }
 
 int HostController::ExitCode() const noexcept { return m_lastExitCode; }
 
-} // namespace Gaokun::Thp
+} // namespace EGoTouch::Driver

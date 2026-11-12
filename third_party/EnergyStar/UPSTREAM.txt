@@ -1,0 +1,8 @@
+EnergyStar
+https://github.com/imbushuo/EnergyStar
+Commit: 18872289ac4de7d22208f1fc5b156abaa904dff8
+Copyright 2022 Bingxing Wang
+Original sources are preserved for attribution and review.
+OpenEGo Hub adapts EnergyManager and HookManager into the native tray runtime.
+The original .NET application is not a runtime dependency.
+See LICENSE and ../../docs/energy-star.md for license and integration details.

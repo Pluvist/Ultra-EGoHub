@@ -2,6 +2,13 @@
 
 #include "MainWindow.g.h"
 #include "NotificationWindow.xaml.h"
+#include "HeadphoneClient.h"
+#include <map>
+#include <memory>
+#include <utility>
+#include <vector>
+
+namespace NativeInputTrace { class Session; }
 
 namespace winrt::EGoTouchSettings::implementation {
 
@@ -9,6 +16,16 @@ struct MainWindow : MainWindowT<MainWindow> {
     MainWindow();
     ~MainWindow();
 
+    void HeadphoneRefreshClicked(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+    void HeadphoneFastReconnectToggled(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+    winrt::fire_and_forget HeadphoneReconnectClicked(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+    void HeadphoneSelectionChanged(IInspectable const&, Microsoft::UI::Xaml::Controls::SelectionChangedEventArgs const&);
+    void HeadphoneEqualizerClicked(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+    winrt::fire_and_forget HeadphoneEqualizerPrimaryClicked(Microsoft::UI::Xaml::Controls::ContentDialog const&,
+        Microsoft::UI::Xaml::Controls::ContentDialogButtonClickEventArgs const&);
+    void HeadphoneEqualizerDialogClosing(Microsoft::UI::Xaml::Controls::ContentDialog const&,
+        Microsoft::UI::Xaml::Controls::ContentDialogClosingEventArgs const&);
+    void PenHoverToggled(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
     void PenModeSelectionChanged(
         IInspectable const&, Microsoft::UI::Xaml::Controls::SelectionChangedEventArgs const&);
     void OneNoteCompatibilityToggled(
@@ -17,6 +34,7 @@ struct MainWindow : MainWindowT<MainWindow> {
     void KeyboardWirelessToggled(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
     void TouchProviderToggled(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
     void SmartChargeToggled(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+    winrt::fire_and_forget EnergyStarToggled(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
     void VendorHintDismissed(
         Microsoft::UI::Xaml::Controls::InfoBar const&, IInspectable const&);
     void VendorHintActionClicked(
@@ -62,6 +80,49 @@ private:
     WNDPROC m_originalWndProc = nullptr;
     bool IsMainUiVisible();
     void UpdateRefreshPolicy();
+    void EnsureMainContent();
+    void EnsureNotificationWindow();
+    bool m_mainContentInitialized = false;
+    void InitializeHeadphones();
+    winrt::fire_and_forget ShowHeadphoneConnectionAsync(uint64_t address, std::chrono::steady_clock::time_point requestedAt = {});
+    void DispatchPendingHeadphonePopup();
+    void PresentHeadphoneConnection(const HuaweiHeadphones::Snapshot& state);
+    winrt::fire_and_forget LoadHeadphoneImageAsync(HuaweiHeadphones::Snapshot state);
+    Windows::Foundation::IAsyncAction PrepareHeadphoneImageAsync(HuaweiHeadphones::Snapshot state);
+    HuaweiHeadphones::Snapshot HeadphoneArtworkSnapshot(const HuaweiHeadphones::Snapshot& state) const;
+    void ApplyHeadphoneImage(const HuaweiHeadphones::Snapshot& state, const Microsoft::UI::Xaml::Media::ImageSource& image);
+    std::map<std::string, Microsoft::UI::Xaml::Media::ImageSource> m_headphoneImages;
+    std::map<uint64_t, HuaweiHeadphones::Snapshot> m_headphoneIdentities;
+    std::map<std::string, bool> m_headphoneImagePending;
+    std::map<std::string, std::map<uint64_t, HuaweiHeadphones::Snapshot>> m_headphoneImageRequests;
+    uint64_t m_headphonePopupGeneration = 0, m_pendingHeadphonePopup = 0;
+    std::chrono::steady_clock::time_point m_pendingHeadphoneSince{};
+    bool m_headphonePopupReading = false, m_headphoneRefreshDeferred = false;
+    void UpdateHeadphoneRefreshPolicy();
+    winrt::fire_and_forget ReleaseHeadphoneConnectionAsync();
+    void RenderHeadphones();
+    void ApplyHeadphoneCardLayout(bool wide);
+    void SetHeadphoneBusy(bool value);
+    winrt::fire_and_forget RefreshHeadphonesAsync(bool full);
+    winrt::fire_and_forget SetHeadphoneControlAsync(std::string id, int value);
+    winrt::fire_and_forget ShowHeadphoneEqualizerAsync();
+    Windows::Foundation::IAsyncOperation<bool> SetHeadphoneEqualizerAsync();
+    winrt::fire_and_forget RemoveHeadphonePeerAsync(std::array<uint8_t,6> peer, winrt::hstring name);
+    std::shared_ptr<HuaweiHeadphones::Client> m_headphoneClient = std::make_shared<HuaweiHeadphones::Client>();
+    HuaweiHeadphones::Snapshot m_headphoneSnapshot;
+    std::vector<HuaweiHeadphones::Device> m_headphoneDevices;
+    std::map<std::string, Microsoft::UI::Xaml::Controls::ComboBox> m_headphoneCombos;
+    std::vector<std::pair<Microsoft::UI::Xaml::Controls::Expander,Microsoft::UI::Xaml::Controls::Grid>> m_headphoneMenuGroups;
+    std::map<std::wstring,bool> m_headphoneExpandedGroups;
+    bool m_headphoneLayoutDirty=true, m_headphoneCardsWide=false;
+    std::array<Microsoft::UI::Xaml::Controls::Slider,10> m_headphoneBands{nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr};
+    Microsoft::UI::Xaml::DispatcherTimer m_headphoneTimer{nullptr};
+    HuaweiHeadphones::Model m_headphoneRenderedModel = HuaweiHeadphones::Model::Unknown;
+    uint64_t m_headphoneAddress = 0, m_headphoneUiEpoch = 0, m_headphoneEqAddress = 0;
+    bool m_headphoneEqDirty = false, m_headphoneDialogPending = false, m_headphoneSelectionExplicit = false;
+    bool m_headphoneEqDialogOpen=false, m_headphoneEqSaving=false;
+    uint64_t m_headphoneEqDialogAddress=0, m_headphoneEqDialogEpoch=0;
+    bool m_headphoneRendering = false, m_headphoneBusy = false, m_headphonePageVisible = false, m_headphoneRowsBuilt = false;
     bool m_closed = false;
     bool m_mainUiVisible = false;
     bool m_batteryPageVisible = false;
@@ -78,6 +139,7 @@ private:
     void DestroyBridgeWindow();
     void ActivateWindow();
     void ShowNotification(EGoTouchTrayIpc::Notification notification, LPARAM payload);
+    winrt::fire_and_forget ShowPreparedConnectionAsync(EGoTouchTrayIpc::Notification notification);
     void ApplyTheme(Microsoft::UI::Xaml::ElementTheme theme);
     void SyncFrameTheme();
     void ConfigureWindow();
@@ -87,6 +149,8 @@ private:
     void LoadStoredSettings();
     void RefreshState();
     void RefreshControls(const PenStatus::State* state);
+    void RefreshEnergyStarRow();
+    winrt::fire_and_forget RefreshEnergyStarAsync(bool force = false);
     void RefreshDevicePage(const PenStatus::State* state);
     void ShowAboutVersion();
     void FillDevicePage();
@@ -139,6 +203,7 @@ private:
     static void WriteUserSetting(const wchar_t* name, DWORD value);
     static winrt::hstring ProviderErrorText(uint8_t error);
 
+    std::unique_ptr<::NativeInputTrace::Session> m_nativeInputTrace;
     PenStatus::Reader m_reader;
     Microsoft::UI::Xaml::DispatcherTimer m_refreshTimer{nullptr};
     // 电池的高频项。1 Hz 足够：读一次只要几十微秒，但显示的数字本身以分钟为单位。
@@ -182,6 +247,10 @@ private:
     bool m_kbdSeen = false;
     // 最近一次的内容区宽度。可见性变化时要重算两列布局，而那时手上没有 SizeChangedEventArgs。
     double m_deviceCardsWidth = 0.0;
+    bool m_deviceCardLayoutValid = false;
+    bool m_deviceCardLayoutPenSeen = false, m_deviceCardLayoutKbdSeen = false;
+    bool m_deviceCardLayoutWide = false;
+    double m_deviceCardLayoutWidth = 0.0;
     // 构造完成前不接受任何控件事件：XAML 解析本身就会触发它们，那时控件还没备齐，
     // 而滑块此刻的值是 Minimum，照单提交等于替用户改设置。
     bool m_uiReady = false;
@@ -196,6 +265,20 @@ private:
     bool m_vendorHintDismissed = false;
     HWND m_bridgeWindow = nullptr;
     bool m_updatingControls = false;
+    uint32_t m_energyStarStatus = 0;
+    bool m_energyStarQueried = false, m_energyStarReachable = false;
+    bool m_energyStarEffective = false, m_energyStarRequested = false;
+    bool m_energyStarSending = false, m_energyStarAwaitingEcho = false;
+    bool m_energyStarQueryInFlight = false;
+    uint64_t m_energyStarEpoch = 0;
+    HWND m_energyStarTrayWindow = nullptr;
+    DWORD m_energyStarTrayProcess = 0;
+    ULONGLONG m_energyStarNextQuery = 0, m_energyStarEchoDeadline = 0;
+    winrt::hstring m_energyStarError;
+    bool m_effectivePenHover=true;
+    bool m_penHoverPending=false;
+    bool m_penHoverRequested=true;
+    ULONGLONG m_penHoverDeadline=0;
     // 服务当前生效的侧键模式，跟着状态通道走。提交前与它比对，避免把刚读回来的值再发一遍——
     // 详见 RefreshControls 里的说明。0xFF 表示还没读到过。
     uint8_t m_effectivePenMode = 0xFF;
@@ -236,6 +319,8 @@ private:
     ULONGLONG m_keyboardImageRetryAt = 0;
     winrt::Microsoft::UI::Xaml::Media::ImageSource m_penImageSource{nullptr};
     winrt::Microsoft::UI::Xaml::Media::ImageSource m_keyboardImageSource{nullptr};
+    uint32_t m_penImageSourceModelId = 0;
+    Windows::Foundation::Size m_penImagePixelSize{}, m_keyboardImagePixelSize{};
     winrt::Microsoft::UI::Xaml::Media::ImageSource m_machineImageSource{nullptr};
     winrt::EGoTouchSettings::NotificationWindow m_notificationWindow{nullptr};
 };

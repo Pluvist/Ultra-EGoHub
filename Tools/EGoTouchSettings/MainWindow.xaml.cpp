@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "PopupTimingTrace.h"
 
 #include "MainWindow.xaml.h"
 #include "AccessoryImageLoader.h"
@@ -6,6 +7,8 @@
 #include "DeviceInfo.h"
 #include "AppVersion.h"
 #include "LogExport.h"
+#include "PenStatusUiState.h"
+#include "NativeInputTrace.h"
 // gaokun-hal 的电池读取。电量、容量、健康度、循环次数都不需要提权，本进程直接读；
 // 只有充电阈值要管理员权限，那一项由服务读了经状态通道送回来。
 #include "GaokunPower.h"
@@ -206,13 +209,23 @@ std::optional<std::wstring> PickSaveLocation(HWND owner, std::wstring const& sug
 } // namespace
 
 MainWindow::MainWindow() {
+    PopupTimingTrace::Record("settings.xaml_start");
     InitializeComponent();
+
+    // Opt-in observation only: WinUI continues to own all input and scrolling.
+    try {
+        m_nativeInputTrace = std::make_unique<::NativeInputTrace::Session>();
+        m_nativeInputTrace->Start(RootLayout());
+    } catch (...) {
+        m_nativeInputTrace.reset();
+    }
 
     ExtendsContentIntoTitleBar(true);
     SetTitleBar(AppTitleBar());
 
     ConfigureWindow();
     CreateBridgeWindow();
+    PopupTimingTrace::Record("settings.bridge_ready");
 
     // 内容那一侧由 RequestedTheme 管，窗框和标题栏按钮要自己跟上。订在 ActualThemeChanged
     // 上，用户改外观和系统改主题走的是同一条路。
@@ -222,11 +235,6 @@ MainWindow::MainWindow() {
     RootLayout().Loaded([this](IInspectable const&, RoutedEventArgs const&) { SyncFrameTheme(); });
 
     LoadStoredSettings();
-    ShowAboutVersion();
-    FillDevicePage();
-    FillBatteryInfoAsync();
-    LoadColorReferenceAsync();
-    SetTitleBarIconAsync();
     RefreshState();
 
     // 到这里控件才算备齐。在此之前 Slider 的 ValueChanged 已经因为 XAML 里的 Minimum
@@ -258,6 +266,11 @@ MainWindow::MainWindow() {
 
     Closed([this](IInspectable const&, WindowEventArgs const&) {
         m_closed = true;
+        if (m_nativeInputTrace) m_nativeInputTrace->Stop();
+        if(m_headphoneEqDialogOpen)try{HeadphoneEqualizerDialog().Hide();}catch(...){}
+        if (m_headphoneTimer) m_headphoneTimer.Stop();
+        m_headphoneClient->Cancel();
+        ReleaseHeadphoneConnectionAsync();
         SaveWindowPlacement();
         if (m_originalWndProc) {
             SetWindowLongPtrW(WindowHandle(), GWLP_WNDPROC,
@@ -283,6 +296,7 @@ MainWindow::MainWindow() {
 }
 
 MainWindow::~MainWindow() {
+    if (m_nativeInputTrace) m_nativeInputTrace->Stop();
     if (m_refreshTimer) m_refreshTimer.Stop();
     DestroyBridgeWindow();
 }
@@ -304,6 +318,19 @@ bool MainWindow::IsMainUiVisible() {
     return hwnd && IsWindowVisible(hwnd) && !IsIconic(hwnd);
 }
 
+void MainWindow::EnsureMainContent() {
+    if (m_mainContentInitialized || m_closed) return;
+    m_mainContentInitialized = true;
+    // A background connection popup needs no SMBIOS, battery-driver request,
+    // machine artwork, colour-reference decode or equalizer editor construction.
+    InitializeHeadphones();
+    ShowAboutVersion();
+    FillDevicePage();
+    FillBatteryInfoAsync();
+    LoadColorReferenceAsync();
+    SetTitleBarIconAsync();
+}
+
 void MainWindow::UpdateRefreshPolicy() {
     if (!m_uiReady || !m_refreshTimer || !m_batteryTimer) return;
     const bool mainVisible = IsMainUiVisible();
@@ -316,6 +343,8 @@ void MainWindow::UpdateRefreshPolicy() {
     if (!batteryVisible && m_batteryPageVisible) m_smoothedValid = false;
     m_mainUiVisible = mainVisible;
     m_batteryPageVisible = batteryVisible;
+    if (mainVisible) EnsureMainContent();
+    UpdateHeadphoneRefreshPolicy();
     if (mainVisible || notifyNeedsRefresh) {
         if (!m_refreshTimer.IsEnabled()) m_refreshTimer.Start();
     } else {
@@ -542,7 +571,7 @@ LRESULT CALLBACK MainWindow::BridgeWndProc(
                 self->m_exitPending = false;
                 self->SetInteractiveEnabled(self->m_trayConnected);
                 if (self->IsMainUiVisible()) {
-                    self->ShowError(L"无法安全退出", L"未能确认 HuaweiTHP 已恢复，应用将继续运行。");
+                    self->ShowError(L"无法安全退出", L"退出尚未完成，请稍后重试。");
                 }
             }
             break;
@@ -555,13 +584,24 @@ LRESULT CALLBACK MainWindow::BridgeWndProc(
     return DefWindowProcW(hwnd, message, wParam, lParam);
 }
 
-void MainWindow::ShowNotification(EGoTouchTrayIpc::Notification notification, LPARAM payload) {
-    if (m_closed) return;
+void MainWindow::EnsureNotificationWindow() {
     if (!m_notificationWindow) {
         m_notificationWindow = make<winrt::EGoTouchSettings::implementation::NotificationWindow>();
         get_self<implementation::NotificationWindow>(m_notificationWindow)->SetRefreshDemandChanged(
             [this] { UpdateRefreshPolicy(); });
     }
+}
+
+void MainWindow::ShowNotification(EGoTouchTrayIpc::Notification notification, LPARAM payload) {
+    PopupTimingTrace::Record("settings.notification",static_cast<int>(notification));
+    if (m_closed) return;
+    if (notification == EGoTouchTrayIpc::Notification::HeadphoneConnected) {
+        ShowHeadphoneConnectionAsync(static_cast<uint64_t>(payload));
+        return;
+    }
+    ++m_headphonePopupGeneration;
+    m_pendingHeadphonePopup = 0;
+    EnsureNotificationWindow();
     auto implementation = get_self<winrt::EGoTouchSettings::implementation::NotificationWindow>(
         m_notificationWindow);
     // 弹窗是另一个 Window，主题不会从主窗口继承下来。每次弹出前推一遍而不是只在创建时推：
@@ -576,15 +616,37 @@ void MainWindow::ShowNotification(EGoTouchTrayIpc::Notification notification, LP
         return;
     }
 
+    if (notification == EGoTouchTrayIpc::Notification::KeyboardConnected ||
+        notification == EGoTouchTrayIpc::Notification::PenConnected) ShowPreparedConnectionAsync(notification);
+}
+
+fire_and_forget MainWindow::ShowPreparedConnectionAsync(EGoTouchTrayIpc::Notification notification) {
+    auto lifetime = get_strong();
+    const auto generation = m_headphonePopupGeneration;
+    const bool keyboard = notification == EGoTouchTrayIpc::Notification::KeyboardConnected;
+    const auto ui = apartment_context();
     PenStatus::State state{};
-    if (!m_reader.IsOpen()) m_reader.Open();
-    if (m_reader.IsOpen() && m_reader.Read(state)) {
-        if (notification == EGoTouchTrayIpc::Notification::KeyboardConnected) {
-            implementation->ShowKeyboardConnected(state);
-        } else {
-            implementation->ShowConnected(state);
-        }
-    }
+    bool ready = false;
+    co_await resume_background();
+    try {
+        PenStatus::Reader reader;
+        ready = reader.Open() && reader.Read(state);
+    } catch (...) {}
+    try { co_await ui; } catch (...) { co_return; }
+    if (!ready || m_closed || generation != m_headphonePopupGeneration ||
+        ReadUserSetting(L"DeviceNotifications", 1) == 0) co_return;
+    EnsureNotificationWindow();
+    auto popup = get_self<implementation::NotificationWindow>(m_notificationWindow);
+    if (m_penImageSource && m_penImageSourceModelId == state.modelId)
+        popup->PreparePenImage(state.modelId, m_penImageSource, m_penImagePixelSize);
+    if (m_keyboardImageSource)
+        popup->PrepareKeyboardImage(m_keyboardImageSource, m_keyboardImagePixelSize);
+    try { co_await popup->PrepareConnectionAsync(state, keyboard); } catch (...) {}
+    if (m_closed || generation != m_headphonePopupGeneration ||
+        ReadUserSetting(L"DeviceNotifications", 1) == 0) co_return;
+    popup->ApplyTheme(RootLayout().RequestedTheme());
+    if (keyboard) popup->ShowKeyboardConnected(state);
+    else popup->ShowConnected(state);
 }
 
 void MainWindow::ActivateWindow() {
@@ -630,6 +692,12 @@ void MainWindow::LoadStoredSettings() {
         ReadUserSetting(L"OneNoteCompatibility", 1) != 0);
     AutoStartToggle().IsOn(ReadUserSetting(L"AutoStart", 1) != 0);
     DeviceNotificationsToggle().IsOn(ReadUserSetting(L"DeviceNotifications", 1) != 0);
+    HeadphoneFastReconnectToggle().IsOn(ReadUserSetting(L"HeadphoneFastReconnect", 1) != 0);
+    // This is only a startup placeholder; querying the tray decides the real state
+    // and availability before the user can submit a change.
+    m_energyStarEffective = ReadUserSetting(L"EnergyStarEnabled", 0) != 0;
+    EnergyStarToggle().IsOn(m_energyStarEffective);
+    EnergyStarToggle().IsEnabled(false);
     // 生效的那份在服务的配置里（service.auto_update_check），但服务不把它发布到状态通道，
     // 这里读不回来。显示的是托盘每次改动时记下的那一份，与色域、色温几项同理——不要误以为
     // 这个开关的显示值来自回读，绕过界面改服务配置时两边就会不一致。
@@ -681,6 +749,180 @@ bool MainWindow::SendTrayCommand(EGoTouchTrayIpc::Command command, LPARAM value)
         static_cast<WPARAM>(command), value,
         SMTO_ABORTIFHUNG | SMTO_BLOCK, 2000, &response);
     return sent != 0 && response != 0;
+}
+
+namespace {
+
+bool EnergyStarHas(uint32_t status, EGoTouchTrayIpc::EnergyStarStatus flag) {
+    return (status & static_cast<uint32_t>(flag)) != 0;
+}
+
+bool IsTrayProcess(HWND tray, DWORD process) {
+    DWORD current = 0;
+    return tray && process && GetWindowThreadProcessId(tray, &current) && current == process;
+}
+
+struct EnergyStarReply {
+    bool received = false;
+    DWORD_PTR value = 0;
+};
+
+// Background-only use: all window/process inputs were captured on the UI thread.
+// A query must not use SendTrayCommand's Boolean acceptance interpretation.
+EnergyStarReply SendEnergyStarMessage(HWND tray, DWORD process,
+    EGoTouchTrayIpc::Command command, LPARAM value, UINT timeout) {
+    EnergyStarReply reply;
+    if (!IsTrayProcess(tray, process)) return reply;
+    reply.received = SendMessageTimeoutW(tray, EGoTouchTrayIpc::kCommandMessage,
+        static_cast<WPARAM>(command), value, SMTO_ABORTIFHUNG | SMTO_BLOCK,
+        timeout, &reply.value) != 0;
+    if (!IsTrayProcess(tray, process)) reply.received = false;
+    return reply;
+}
+
+} // namespace
+
+void MainWindow::RefreshEnergyStarRow() {
+    using Flag = EGoTouchTrayIpc::EnergyStarStatus;
+    const bool valid = m_energyStarReachable && EnergyStarHas(m_energyStarStatus, Flag::Valid);
+    const bool supported = valid && EnergyStarHas(m_energyStarStatus, Flag::Supported);
+    const bool transitioning = valid && EnergyStarHas(m_energyStarStatus, Flag::Transitioning);
+    const bool updating = m_updatingControls;
+    m_updatingControls = true;
+    EnergyStarToggle().IsOn(m_energyStarAwaitingEcho ? m_energyStarRequested : m_energyStarEffective);
+    EnergyStarToggle().IsEnabled(m_trayConnected && !m_exitPending && supported &&
+        !transitioning && !m_energyStarSending && !m_energyStarAwaitingEcho);
+    m_updatingControls = updating;
+
+    if (!m_trayConnected) {
+        EnergyStarStatusText().Text(L"托盘未运行，无法读取实际状态。");
+    } else if (m_energyStarSending || m_energyStarAwaitingEcho) {
+        EnergyStarStatusText().Text(GetTickCount64() >= m_energyStarEchoDeadline
+            ? L"操作耗时较长，正在等待实际状态…"
+            : m_energyStarRequested ? L"正在开启…" : L"正在关闭…");
+    } else if (!m_energyStarQueried) {
+        EnergyStarStatusText().Text(L"正在读取实际状态…");
+    } else if (!m_energyStarReachable) {
+        EnergyStarStatusText().Text(L"托盘未响应，无法读取实际状态。请稍后重试。");
+    } else if (!valid) {
+        EnergyStarStatusText().Text(L"当前托盘不支持此功能，请重新启动 Ultra-EGoHub 托盘。");
+    } else if (!supported) {
+        EnergyStarStatusText().Text(L"当前系统暂不支持 EnergyStar 节能。");
+    } else if (transitioning) {
+        EnergyStarStatusText().Text(L"正在更新节能状态…");
+    } else if (!m_energyStarError.empty()) {
+        EnergyStarStatusText().Text(m_energyStarError);
+    } else if (EnergyStarHas(m_energyStarStatus, Flag::Failed)) {
+        EnergyStarStatusText().Text(L"节能设置未能完成，当前显示实际状态。请重试。");
+    } else {
+        EnergyStarStatusText().Text(m_energyStarEffective ? L"已开启" : L"已关闭");
+    }
+}
+
+fire_and_forget MainWindow::RefreshEnergyStarAsync(bool force) {
+    if (!m_uiReady || m_closed || m_energyStarQueryInFlight || m_energyStarSending) co_return;
+    if (!force && !m_energyStarAwaitingEcho && BatteryPage().Visibility() != Visibility::Visible) co_return;
+    const auto now = GetTickCount64();
+    if (!force && now < m_energyStarNextQuery) co_return;
+    m_energyStarNextQuery = now + 500;
+    const HWND tray = FindTrayWindow();
+    DWORD process = 0;
+    if (tray) GetWindowThreadProcessId(tray, &process);
+    if (!tray || !process) {
+        m_energyStarReachable = false;
+        m_energyStarAwaitingEcho = false;
+        RefreshEnergyStarRow();
+        co_return;
+    }
+    const auto epoch = m_energyStarEpoch;
+    auto lifetime = get_strong();
+    auto ui = apartment_context();
+    m_energyStarQueryInFlight = true;
+    EnergyStarReply reply;
+    co_await resume_background();
+    reply = SendEnergyStarMessage(tray, process, EGoTouchTrayIpc::Command::QueryEnergyStar, 0, 250);
+    try { co_await ui; } catch (...) { co_return; }
+    if (m_closed) co_return;
+    m_energyStarQueryInFlight = false;
+    if (epoch != m_energyStarEpoch) co_return;
+    if (FindTrayWindow() != tray || !IsTrayProcess(tray, process)) {
+        m_energyStarReachable = false;
+        m_energyStarAwaitingEcho = false;
+        m_energyStarNextQuery = 0;
+        RefreshEnergyStarRow();
+        co_return;
+    }
+
+    using Flag = EGoTouchTrayIpc::EnergyStarStatus;
+    m_energyStarQueried = true;
+    m_energyStarReachable = reply.received;
+    m_energyStarStatus = reply.received && reply.value <= UINT32_MAX
+        ? static_cast<uint32_t>(reply.value) : 0;
+    const bool valid = reply.received && EnergyStarHas(m_energyStarStatus, Flag::Valid);
+    if (valid) {
+        m_energyStarEffective = EnergyStarHas(m_energyStarStatus, Flag::Enabled);
+        m_energyStarTrayWindow = tray;
+        m_energyStarTrayProcess = process;
+    }
+    if (!valid || !EnergyStarHas(m_energyStarStatus, Flag::Supported)) {
+        m_energyStarAwaitingEcho = false;
+    } else if (m_energyStarAwaitingEcho && !EnergyStarHas(m_energyStarStatus, Flag::Transitioning)) {
+        // SetEnabled publishes Transitioning before acknowledging the request.
+        // A subsequent stable reply is the result, including a failed rollback.
+        m_energyStarAwaitingEcho = false;
+        if (!EnergyStarHas(m_energyStarStatus, Flag::Failed) && m_energyStarEffective != m_energyStarRequested) {
+            m_energyStarError = L"修改未生效，当前显示实际状态。请重试。";
+        }
+    }
+    RefreshEnergyStarRow();
+}
+
+fire_and_forget MainWindow::EnergyStarToggled(IInspectable const&, RoutedEventArgs const&) {
+    if (!m_uiReady || m_updatingControls || m_closed) co_return;
+    using Flag = EGoTouchTrayIpc::EnergyStarStatus;
+    const bool requested = EnergyStarToggle().IsOn();
+    if (m_energyStarSending || m_energyStarAwaitingEcho || m_exitPending ||
+        !m_energyStarReachable || !EnergyStarHas(m_energyStarStatus, Flag::Valid) ||
+        !EnergyStarHas(m_energyStarStatus, Flag::Supported) ||
+        EnergyStarHas(m_energyStarStatus, Flag::Transitioning)) {
+        RefreshEnergyStarRow();
+        co_return;
+    }
+    if (requested == m_energyStarEffective) co_return;
+    const HWND tray = FindTrayWindow();
+    DWORD process = 0;
+    if (tray) GetWindowThreadProcessId(tray, &process);
+    if (tray != m_energyStarTrayWindow || process != m_energyStarTrayProcess || !process) {
+        m_energyStarQueried = false;
+        m_energyStarReachable = false;
+        RefreshEnergyStarRow();
+        RefreshEnergyStarAsync(true);
+        co_return;
+    }
+    const auto epoch = ++m_energyStarEpoch;
+    m_energyStarRequested = requested;
+    m_energyStarSending = true;
+    m_energyStarAwaitingEcho = true;
+    m_energyStarEchoDeadline = GetTickCount64() + 15000;
+    m_energyStarError = {};
+    RefreshEnergyStarRow();
+    auto lifetime = get_strong();
+    auto ui = apartment_context();
+    EnergyStarReply reply;
+    co_await resume_background();
+    reply = SendEnergyStarMessage(tray, process, EGoTouchTrayIpc::Command::SetEnergyStar,
+        requested ? 1 : 0, 2000);
+    try { co_await ui; } catch (...) { co_return; }
+    if (m_closed || epoch != m_energyStarEpoch) co_return;
+    m_energyStarSending = false;
+    if (!reply.received || reply.value == 0 || FindTrayWindow() != tray || !IsTrayProcess(tray, process)) {
+        m_energyStarAwaitingEcho = false;
+        m_energyStarReachable = false;
+        m_energyStarError = L"修改请求未被确认，当前显示实际状态。请重试。";
+    }
+    m_energyStarNextQuery = 0;
+    RefreshEnergyStarRow();
+    RefreshEnergyStarAsync(true);
 }
 
 // 优先读取 exe 的版本资源；资源缺失时使用与安装包同源的构建版本。
@@ -1034,31 +1276,49 @@ void MainWindow::SyncFrameTheme() {
 void MainWindow::DeviceCardsSizeChanged(IInspectable const&,
                                         SizeChangedEventArgs const& args) {
     m_deviceCardsWidth = args.NewSize().Width;
+    if(m_headphoneEqDialogOpen)
+        HeadphoneEqualizerScroll().MaxHeight(std::clamp(RootLayout().ActualHeight()-220.0,120.0,480.0));
     ApplyDeviceCardLayout();
 }
 
 void MainWindow::ApplyDeviceCardLayout() {
+    constexpr double kSideBySideMinWidth = 900.0;
+    const bool sideBySide = m_deviceCardsWidth >= kSideBySideMinWidth;
+    if (m_deviceCardLayoutValid &&
+        m_deviceCardLayoutPenSeen == m_penSeen &&
+        m_deviceCardLayoutKbdSeen == m_kbdSeen &&
+        m_deviceCardLayoutWide == sideBySide &&
+        m_deviceCardLayoutWidth == m_deviceCardsWidth) {
+        // Headphone rows can become dirty independently of pen/keyboard state.
+        ApplyHeadphoneCardLayout(sideBySide);
+        return;
+    }
+    m_deviceCardLayoutValid = true;
+    m_deviceCardLayoutPenSeen = m_penSeen;
+    m_deviceCardLayoutKbdSeen = m_kbdSeen;
+    m_deviceCardLayoutWide = sideBySide;
+    m_deviceCardLayoutWidth = m_deviceCardsWidth;
+
     const auto show = [](bool visible) {
         return visible ? Visibility::Visible : Visibility::Collapsed;
     };
 
     PenGroup().Visibility(show(m_penSeen));
     KeyboardGroup().Visibility(show(m_kbdSeen));
-    DeviceEmptyState().Visibility(show(!m_penSeen && !m_kbdSeen));
+    DeviceEmptyState().Visibility(Visibility::Collapsed);
 
     // 两张设备卡片在够宽时并排。阈值按「一张卡片本身需要的宽度」定：低于它并排只会把两边
     // 都挤扁，不如继续堆叠。用代码切换而不是 AdaptiveTrigger，是因为触发条件要看的是内容区
     // 宽度，而 AdaptiveTrigger 只认窗口宽度——左侧导航栏展开与折叠会让两者差出 180。
-    constexpr double kSideBySideMinWidth = 900.0;
-    const bool sideBySide =
-        m_penSeen && m_kbdSeen && m_deviceCardsWidth >= kSideBySideMinWidth;
-
+    DeviceCards().ColumnSpacing(sideBySide ? 24.0 : 0.0);
     DeviceSecondColumn().Width(sideBySide ? GridLength{1.0, GridUnitType::Star}
                                           : GridLength{0.0, GridUnitType::Pixel});
     // 笔卡片不在时键盘回到第一行：Grid 的 RowSpacing 照样会在空行之后留出 24，卡片会被
     // 顶下去一截。
     Controls::Grid::SetRow(KeyboardGroup(), (m_penSeen && !sideBySide) ? 1 : 0);
-    Controls::Grid::SetColumn(KeyboardGroup(), sideBySide ? 1 : 0);
+    Controls::Grid::SetColumn(KeyboardGroup(), sideBySide && m_penSeen ? 1 : 0);
+    Controls::Grid::SetRow(HeadphoneGroup(), sideBySide ? int(m_penSeen || m_kbdSeen) : int(m_penSeen) + int(m_kbdSeen));
+    ApplyHeadphoneCardLayout(sideBySide);
 }
 
 void MainWindow::PenDismissClicked(IInspectable const&, RoutedEventArgs const&) {
@@ -1118,6 +1378,7 @@ void MainWindow::RequestPenImage(uint32_t modelId) {
 
 fire_and_forget MainWindow::LoadPenImage(uint32_t modelId) {
     auto lifetime = get_strong();
+    if (m_closed) co_return;
     const ULONGLONG now = GetTickCount64();
     const bool modelChanged = modelId != m_penImageModelId;
     if (!modelChanged && m_penImageSource) co_return;
@@ -1130,22 +1391,31 @@ fire_and_forget MainWindow::LoadPenImage(uint32_t modelId) {
     const uint64_t generation = ++m_penImageGeneration;
 
     Media::Imaging::SoftwareBitmapSource decoded{nullptr};
+    Windows::Foundation::Size decodedSize{};
+    const auto ui = apartment_context();
+    AccessoryImages::Asset asset;
+    co_await resume_background();
+    try { asset = AccessoryImages::ResolvePen(modelId); } catch (...) {}
+    try { co_await ui; } catch (...) { co_return; }
+    if (m_closed || generation != m_penImageGeneration || modelId != m_penImageModelId) co_return;
     try {
-        if (auto asset = AccessoryImages::ResolvePen(modelId)) {
+        if (asset) {
             Media::Imaging::SoftwareBitmapSource source;
             const auto pixelSize = co_await AccessoryImages::DecodeCroppedAsync(
                 std::move(asset.encoded), source);
-            if (pixelSize.Width > 0) decoded = source;
+            if (pixelSize.Width > 0) { decoded = source; decodedSize = pixelSize; }
         }
     } catch (...) {
         // PC Manager 更新资源时可能短暂拿到不完整文件；当前画面留着，5 秒后重试。
     }
 
     // 解码期间又换了型号，这一张已经过期，交给后来那次。
-    if (generation != m_penImageGeneration || modelId != m_penImageModelId) co_return;
+    if (m_closed || generation != m_penImageGeneration || modelId != m_penImageModelId) co_return;
 
     if (decoded) {
         m_penImageSource = decoded;
+        m_penImageSourceModelId = modelId;
+        m_penImagePixelSize = decodedSize;
         PenImage().Source(decoded);
         PenImage().Visibility(Visibility::Visible);
         PenImageFallback().Visibility(Visibility::Collapsed);
@@ -1163,20 +1433,26 @@ fire_and_forget MainWindow::LoadPenImage(uint32_t modelId) {
 
 fire_and_forget MainWindow::LoadKeyboardImage() {
     auto lifetime = get_strong();
-    if (m_keyboardImageSource) co_return;
+    if (m_closed || m_keyboardImageSource) co_return;
     const ULONGLONG now = GetTickCount64();
     if (now < m_keyboardImageRetryAt) co_return;
     m_keyboardImageRetryAt = now + 5000;
     const uint64_t generation = ++m_keyboardImageGeneration;
+    const auto ui = apartment_context();
+    AccessoryImages::Asset asset;
+    co_await resume_background();
+    try { asset = AccessoryImages::ResolveKeyboard(); } catch (...) {}
+    try { co_await ui; } catch (...) { co_return; }
+    if (m_closed || generation != m_keyboardImageGeneration) co_return;
 
     try {
-        auto asset = AccessoryImages::ResolveKeyboard();
         if (!asset) co_return;
         Media::Imaging::SoftwareBitmapSource source;
         const auto pixelSize = co_await AccessoryImages::DecodeCroppedAsync(
             std::move(asset.encoded), source);
-        if (pixelSize.Width <= 0 || generation != m_keyboardImageGeneration) co_return;
+        if (m_closed || pixelSize.Width <= 0 || generation != m_keyboardImageGeneration) co_return;
         m_keyboardImageSource = source;
+        m_keyboardImagePixelSize = pixelSize;
         KeyboardImage().Source(source);
         KeyboardImage().Visibility(Visibility::Visible);
         KeyboardImageFallback().Visibility(Visibility::Collapsed);
@@ -1375,6 +1651,7 @@ void MainWindow::RefreshState() {
         m_chargeLimitAwaitingEcho ||
         m_kbdDetachAwaitingEcho ||
         m_providerAwaitingEcho ||
+        m_penHoverPending ||
         m_updateAwaitingEcho ||
         m_vendorTarget != VendorTarget::None ||
         m_exitPending ||
@@ -1383,7 +1660,7 @@ void MainWindow::RefreshState() {
         !m_lastRenderedValid ||
         transientActive ||
         hasState != m_lastRenderedHasState ||
-        (hasState && std::memcmp(&state, &m_lastRenderedState, sizeof(state)) != 0) ||
+        (hasState && !PenStatus::SameUiState(state, m_lastRenderedState)) ||
         m_trayConnected != m_lastRenderedTrayConnected ||
         m_penSeen != m_lastRenderedPenSeen ||
         m_kbdSeen != m_lastRenderedKbdSeen;
@@ -1403,26 +1680,34 @@ void MainWindow::RefreshState() {
     if (notifyNeedsRefresh && hasState && stateChanged) {
         get_self<implementation::NotificationWindow>(m_notificationWindow)->UpdateState(state);
     }
+    if (mainVisible && !m_closed) RefreshEnergyStarAsync();
 }
 
 winrt::hstring MainWindow::ProviderErrorText(uint8_t error) {
-    switch (error) {
-    case 1: return L"无法停止 HuaweiTHP，已保留华为触控";
-    case 2: return L"EGoTouchRev 启动失败，已恢复 HuaweiTHP";
-    case 3: return L"无法禁用 HuaweiTHP，已回滚到华为触控";
-    case 4: return L"EGoTouchRev 停止失败，暂未切换";
-    case 5: return L"HuaweiTHP 恢复失败，已继续使用 EGoTouchRev";
-    case 6: return L"两个触控提供方都无法启动";
-    // 不说「已交还 HuaweiTHP」：走到这一步时交还本身也可能失败，那种情况下的提供方状态
-    // 由上面那个 switch 单独显示，这里只交代原因。
-    case 7: return L"触控宿主反复退出，已停止接管";
-    default: return L"触控提供方切换失败";
+    switch(error) {
+    case 1: return L"无法停止原厂触控，正在重试";
+    case 2: return L"EGoTouchRev 启动失败，正在重试";
+    case 3: return L"无法禁用原厂触控，正在重试";
+    case 4: return L"旧驱动未完全停止，正在重试";
+    case 8: return L"驱动已重试 5 次仍未启动；原厂触控保持禁用，请重新启动驱动服务后重试";
+    default: return L"驱动暂不可用；原厂触控保持禁用";
     }
 }
 
 void MainWindow::RefreshControls(const PenStatus::State* state) {
     m_updatingControls = true;
 
+    const bool hoverKnown = state && state->hasPenHoverEnabled;
+    if (hoverKnown) {
+        m_effectivePenHover = state->penHoverEnabled;
+        if (m_penHoverPending &&
+            (m_effectivePenHover == m_penHoverRequested ||
+             GetTickCount64() >= m_penHoverDeadline)) {
+            m_penHoverPending = false;
+        }
+        PenHoverToggle().IsOn(m_penHoverPending ? m_penHoverRequested : m_effectivePenHover);
+    }
+    PenHoverToggle().IsEnabled(m_trayConnected && !m_exitPending && hoverKnown);
     bool eraserMode = PenModeSelector().SelectedIndex() == 1;
     if (state && state->hasPenButtonMode) {
         // 记下服务当前生效的模式。SelectionChanged 不保证在设值的同一个调用栈里到达，
@@ -1441,7 +1726,7 @@ void MainWindow::RefreshControls(const PenStatus::State* state) {
     // 开关一直跟随系统的真实状态，不再因为「本次会话改过」而锁定。两个方向都幂等、也都
     // 立即生效（恢复会把服务起回来），没有需要保护的中间态；改错了当场再改回去就是。
     if (!state || !state->hasVendorServices) {
-        VendorServicesStatusText().Text(L"正在连接 OpenEGo Hub 服务…");
+        VendorServicesStatusText().Text(L"正在连接 Ultra-EGoHub 服务…");
     } else {
         // 达标判据分两个方向：停用要「全部禁用且没有进程在跑」，恢复要「没有禁用且全部
         // 起来了」。只看启动类型不够——那一步很快，慢的是进程启停。
@@ -1539,37 +1824,38 @@ void MainWindow::RefreshControls(const PenStatus::State* state) {
         m_updatingControls = false;
     }
     if (!providerKnown) {
-        TouchProviderStatusText().Text(L"正在连接 OpenEGo Hub 服务…");
+        TouchProviderStatusText().Text(L"正在连接 Ultra-EGoHub 服务…");
     } else if (m_providerAwaitingEcho) {
         TouchProviderStatusText().Text(m_providerRequested
-            ? L"正在切换到 OpenEGo Hub…" : L"正在交还华为原厂服务…");
+            ? L"正在切换到 Ultra-EGoHub…" : L"原厂触控保持禁用。");
     } else {
         switch (state->touchProvider) {
         case PenStatus::TouchProviderState::EGoTouch:
-            TouchProviderStatusText().Text(L"当前由 OpenEGo Hub 驱动触控与手写笔。");
+            TouchProviderStatusText().Text(L"当前由 Ultra-EGoHub 驱动触控与手写笔。");
             break;
         case PenStatus::TouchProviderState::EGoSuspended:
-            TouchProviderStatusText().Text(L"当前由 OpenEGo Hub 接管（息屏待机中）。");
+            TouchProviderStatusText().Text(L"当前由 Ultra-EGoHub 接管（息屏待机中）。");
             break;
         case PenStatus::TouchProviderState::SwitchingToEGo:
-            TouchProviderStatusText().Text(L"正在切换到 OpenEGo Hub…");
+            TouchProviderStatusText().Text(L"正在切换到 Ultra-EGoHub…");
             break;
         case PenStatus::TouchProviderState::SwitchingToHuawei:
-            TouchProviderStatusText().Text(L"正在交还华为原厂服务…");
+            TouchProviderStatusText().Text(L"原厂触控保持禁用。");
             break;
         case PenStatus::TouchProviderState::Huawei:
-            TouchProviderStatusText().Text(L"当前由华为原厂服务驱动。");
+            TouchProviderStatusText().Text(L"正在禁用原厂触控并启动驱动。");
             break;
         case PenStatus::TouchProviderState::Error:
             TouchProviderStatusText().Text(ProviderErrorText(state->providerError));
             break;
         default:
-            TouchProviderStatusText().Text(L"正在连接 OpenEGo Hub 服务…");
+            TouchProviderStatusText().Text(L"正在连接 Ultra-EGoHub 服务…");
             break;
         }
     }
 
     SetInteractiveEnabled(m_trayConnected && !m_exitPending);
+    RefreshEnergyStarRow();
     UpdateOneNoteRow(eraserMode);
 
     // 键盘在不在，用 MCU 回报的在位状态判断，不要拿「知不知道无线开关的值」代替：
@@ -1598,7 +1884,7 @@ void MainWindow::RefreshControls(const PenStatus::State* state) {
 
     if (m_exitPending) {
         ShowStatus(InfoBarSeverity::Informational, L"正在安全退出",
-                   L"正在恢复 HuaweiTHP；确认触控可用后应用会自动关闭。");
+                   L"正在退出控制面板与托盘，驱动服务继续运行。");
     } else if (!m_trayConnected) {
         ShowStatus(InfoBarSeverity::Warning, L"托盘未运行",
                    L"请先启动 OpenEGoHubTray.exe，再修改设置。");
@@ -1723,6 +2009,7 @@ void MainWindow::RefreshUpdateRow(const PenStatus::State* state) {
     // 第一次刷新就落在这个窗口里，那时视觉树还没挂上，ShowAsync 会直接抛。两种情况都只是
     // 这一拍不弹，下一拍轮询照旧。
     if (available && m_updateVersion != m_updatePromptedVersion && !m_updateDialogOpen &&
+        !m_headphoneDialogPending && !m_exitDialogOpen &&
         IsWindowVisible(WindowHandle()) && RootLayout().XamlRoot()) {
         m_updatePromptedVersion = m_updateVersion;
         ShowUpdateDialog(m_updateVersion, FormatUpdateVersion(*state));
@@ -1776,7 +2063,7 @@ void MainWindow::CheckForUpdatesClicked(IInspectable const&, RoutedEventArgs con
 // 关掉弹窗按「稍后」处理。ContentDialog 的 CloseButton、ESC 和标题栏都归到同一个结果上，
 // 三条路的语义本来就是同一个「现在不装」。
 winrt::fire_and_forget MainWindow::ShowUpdateDialog(uint32_t version, hstring versionText) {
-    if (m_updateDialogOpen) co_return;
+    if (m_updateDialogOpen || m_headphoneDialogPending || m_exitDialogOpen || m_closed) co_return;
     const auto lifetime = get_strong();
     m_updateDialogOpen = true;
 
@@ -1840,10 +2127,17 @@ void MainWindow::RequestUpdateSkip() {
 }
 
 void MainWindow::SetInteractiveEnabled(bool enabled) {
-    TouchProviderToggle().IsEnabled(enabled);
+    TouchProviderToggle().IsEnabled(false);
+    PenHoverToggle().IsEnabled(enabled);
     PenModeSelector().IsEnabled(enabled);
     ColorModeCombo().IsEnabled(enabled);
     SmartChargeToggle().IsEnabled(enabled);
+    using EnergyFlag = EGoTouchTrayIpc::EnergyStarStatus;
+    EnergyStarToggle().IsEnabled(enabled && m_energyStarReachable &&
+        EnergyStarHas(m_energyStarStatus, EnergyFlag::Valid) &&
+        EnergyStarHas(m_energyStarStatus, EnergyFlag::Supported) &&
+        !EnergyStarHas(m_energyStarStatus, EnergyFlag::Transitioning) &&
+        !m_energyStarSending && !m_energyStarAwaitingEcho);
     ColorTemperatureToggle().IsEnabled(enabled);
     // 色温关着的时候滑条与重置按钮一起置灰，与充电上限在智能模式下的处理同理。
     ColorTemperatureSlider().IsEnabled(enabled && ColorTemperatureToggle().IsOn());
@@ -1911,6 +2205,23 @@ void MainWindow::PenModeSelectionChanged(
         ShowError(L"无法修改双击行为", L"服务未连接，设置没有生效。");
     }
     UpdateOneNoteRow(mode == PenButtonMode::ToggleEraser);
+}
+
+void MainWindow::PenHoverToggled(IInspectable const&, RoutedEventArgs const&) {
+    if (m_updatingControls) return;
+    const bool requested = PenHoverToggle().IsOn();
+    if ((m_penHoverPending && requested == m_penHoverRequested) ||
+        (!m_penHoverPending && requested == m_effectivePenHover)) return;
+    if (!SendTrayCommand(EGoTouchTrayIpc::Command::SetPenHoverEnabled, requested ? 1 : 0)) {
+        m_updatingControls = true;
+        PenHoverToggle().IsOn(m_effectivePenHover);
+        m_updatingControls = false;
+        ShowError(L"无法修改笔悬停", L"服务未连接，设置没有生效。");
+        return;
+    }
+    m_penHoverRequested = requested;
+    m_penHoverPending = true;
+    m_penHoverDeadline = GetTickCount64() + 3000;
 }
 
 void MainWindow::OneNoteCompatibilityToggled(
@@ -2039,7 +2350,7 @@ void MainWindow::TouchProviderToggled(IInspectable const&, RoutedEventArgs const
     m_providerRequested = requested;
     m_providerEchoDeadline = GetTickCount64() + 6000;
     TouchProviderStatusText().Text(requested
-        ? L"正在切换到 OpenEGo Hub…" : L"正在交还华为原厂服务…");
+        ? L"正在切换到 Ultra-EGoHub…" : L"原厂触控保持禁用。");
 }
 
 void MainWindow::KeyboardWirelessToggled(IInspectable const&, RoutedEventArgs const&) {
@@ -2189,7 +2500,7 @@ void MainWindow::ExitClicked(IInspectable const&, RoutedEventArgs const&) {
 // 退出会停掉整机触控并把设备交还华为驱动，属于影响面大且不能靠再点一次撤销的操作，按规范
 // 先用 ContentDialog 确认。事件处理函数必须返回 void，协程单独拆出来。
 winrt::fire_and_forget MainWindow::ConfirmExit() {
-    if (m_exitDialogOpen) co_return;
+    if (m_exitDialogOpen || m_headphoneDialogPending || m_updateDialogOpen || m_closed) co_return;
     const auto lifetime = get_strong();
     m_exitDialogOpen = true;
 
@@ -2197,9 +2508,9 @@ winrt::fire_and_forget MainWindow::ConfirmExit() {
     dialog.XamlRoot(RootLayout().XamlRoot());
     // 对话框挂在 XamlRoot 上，不在 RootLayout 的子树里，主题得单独给。
     dialog.RequestedTheme(RootLayout().RequestedTheme());
-    dialog.Title(box_value(hstring{L"退出 OpenEGo Hub？"}));
+    dialog.Title(box_value(hstring{L"退出 Ultra-EGoHub？"}));
     dialog.Content(box_value(hstring{
-        L"触控将交还 HuaweiTHP 驱动，笔侧键与键盘分离设置随之失效。重新启动 OpenEGo Hub 即可恢复。"}));
+        L"控制面板与托盘将退出，触控驱动服务继续运行，原厂触控保持禁用。"}));
     dialog.PrimaryButtonText(L"退出并恢复");
     dialog.CloseButtonText(L"取消");
     // ESC 与手柄 B 本来就映射到 CloseButton，与这里设不设默认按钮无关；把默认按钮也给取消，

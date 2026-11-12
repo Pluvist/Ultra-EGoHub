@@ -45,6 +45,8 @@ inline constexpr uint32_t kFlagHasVendorServices = 1u << 6;
 // 自动更新。检查、下载和安装都由服务做：它在 LocalSystem 下常驻、有网络，也是唯一能执行
 // msiexec 的进程。托盘只负责把用户的决定送过来。
 inline constexpr uint32_t kFlagHasUpdate = 1u << 7;
+inline constexpr uint32_t kFlagHasPenHover = 1u << 8;
+inline constexpr uint32_t kFlagPenHoverEnabled = 1u << 9;
 
 enum class ProviderLeaseCommand : uint8_t {
     None = 0,
@@ -143,6 +145,8 @@ enum class Scope {
 
 // 交给调用方的普通值类型，不引用共享内存。
 struct Command {
+    bool hasPenHoverEnabled = false;
+    bool penHoverEnabled = true;
     bool     hasPenButtonMode = false;
     uint8_t  penButtonMode = 0;
     bool     hasProviderLease = false;
@@ -216,6 +220,7 @@ public:
 
     // seqlock 写入一份提交并置位事件。返回 false 表示通道未打开。
     bool SubmitPenButtonMode(uint8_t mode);
+    bool SubmitPenHoverEnabled(bool enabled);
     bool SubmitProviderLease(ProviderLeaseCommand command);
     bool SubmitInputSuppression(InputSuppressionCommand command);
     bool SubmitKbdDetachSupport(KbdDetachSupportCommand command);
