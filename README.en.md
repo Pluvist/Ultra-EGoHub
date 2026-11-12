@@ -288,6 +288,7 @@ notice is in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 
 The following projects and community work were consulted along the way, with thanks:
 
+- Thanks to Nshpiter and the HuaweiPods contributors for documenting the headphone Bluetooth protocol. Ultra-EGoHub independently implements its Windows headphone controls, using HuaweiPods as a reference for battery reporting, noise cancellation, transparency mode, and equalizer commands. [HuaweiPods (GPL-3.0)](https://github.com/Nshpiter/HuaweiPods) · [Protocol and implementation notes](docs/headphones-protocol.md)
 - [MateBook-E-Pen](https://github.com/eiyooooo/MateBook-E-Pen) (by eiyooooo)
 - [goodies](https://github.com/matebook-e-go/goodies) (by dantmnf)
 - [EgoTools](https://github.com/SaKongA/EgoTools) (by SaKongA)

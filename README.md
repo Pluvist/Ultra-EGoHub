@@ -225,6 +225,7 @@ scripts\pack_release_version.bat
 
 开发过程中参考了以下开源项目及社区成果：
 
+- 感谢 Nshpiter 和 HuaweiPods 的贡献者公开耳机蓝牙协议资料。Ultra-EGoHub 的 Windows 耳机控制独立实现，电量读取、降噪与通透、均衡器等功能参考了这些通信格式和命令。 [HuaweiPods（GPL-3.0）](https://github.com/Nshpiter/HuaweiPods) · [协议与实现说明](docs/headphones-protocol.md)
 - [MateBook-E-Pen](https://github.com/eiyooooo/MateBook-E-Pen)（by eiyooooo）
 - [goodies](https://github.com/matebook-e-go/goodies)（by dantmnf）
 - [EgoTools](https://github.com/SaKongA/EgoTools)（by SaKongA）
