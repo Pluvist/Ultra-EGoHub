@@ -226,6 +226,7 @@ scripts\pack_release_version.bat
 开发过程中参考了以下开源项目及社区成果：
 
 - 感谢 Nshpiter 和 HuaweiPods 的贡献者公开耳机蓝牙协议资料。Ultra-EGoHub 的 Windows 耳机控制独立实现，电量读取、降噪与通透、均衡器等功能参考了这些通信格式和命令。 [HuaweiPods（GPL-3.0）](https://github.com/Nshpiter/HuaweiPods) · [协议与实现说明](docs/headphones-protocol.md)
+- 感谢 Bingxing Wang（imbushuo）开发 EnergyStar。Ultra-EGoHub 电池页的节能功能改编自该项目，使用 Windows EcoQoS 管理后台应用的能效。 [EnergyStar 项目](https://github.com/imbushuo/EnergyStar) · [集成说明](docs/energy-star.md) · [原始许可证](third_party/EnergyStar/LICENSE)
 - [MateBook-E-Pen](https://github.com/eiyooooo/MateBook-E-Pen)（by eiyooooo）
 - [goodies](https://github.com/matebook-e-go/goodies)（by dantmnf）
 - [EgoTools](https://github.com/SaKongA/EgoTools)（by SaKongA）
